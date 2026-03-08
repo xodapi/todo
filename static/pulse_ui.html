@@ -1,0 +1,481 @@
+<!--
+  PULSE UI — вставить в index.html:
+  1. Стили — в <style>
+  2. HTML модалки и настроек — в конец <body>
+  3. JS — в <script>
+  4. В nav() добавить: if(p==='pulse') loadPulsePage()
+  5. Добавить кнопку в <nav>: <button onclick="nav('pulse')">Активность</button>
+  6. В конце doLogin() добавить: startPulsePolling()
+-->
+
+<!-- ═══ СТИЛИ (добавить в <style>) ═══ -->
+<style>
+/* Pulse — всплывающий вопрос */
+#pulse-popup {
+  display:none;
+  position:fixed;
+  bottom:28px; right:28px;
+  width:340px;
+  background:var(--surface);
+  border:1px solid var(--accent);
+  border-radius:var(--radius);
+  box-shadow:0 8px 32px #000a;
+  z-index:400;
+  animation:slideUp .25s ease;
+}
+@keyframes slideUp {
+  from{transform:translateY(20px);opacity:0}
+  to  {transform:translateY(0);opacity:1}
+}
+#pulse-popup.show { display:block; }
+.pp-head {
+  padding:10px 14px;
+  border-bottom:1px solid var(--border);
+  display:flex; justify-content:space-between; align-items:center;
+}
+.pp-head .pp-title { font-size:11px; color:var(--accent); text-transform:uppercase; letter-spacing:1px; }
+.pp-head .pp-timer { font-family:var(--mono); font-size:11px; color:var(--warn); }
+.pp-body { padding:12px 14px; }
+.pp-question { font-size:13px; margin-bottom:10px; color:var(--text); }
+.pp-task-hint { font-size:11px; color:var(--text2); margin-bottom:8px; }
+.pp-task-hint span { color:var(--ok); }
+#pp-input {
+  width:100%;
+  background:var(--bg);
+  border:1px solid var(--border);
+  color:var(--text);
+  padding:7px 10px;
+  border-radius:var(--radius);
+  font-size:13px;
+  outline:none;
+  margin-bottom:8px;
+}
+#pp-input:focus { border-color:var(--accent); }
+.pp-quick { display:flex; flex-wrap:wrap; gap:5px; margin-bottom:10px; }
+.pp-quick button {
+  background:var(--bg);
+  border:1px solid var(--border);
+  color:var(--text2);
+  padding:3px 9px;
+  border-radius:var(--radius);
+  font-size:11px;
+  cursor:pointer;
+  transition:.12s;
+}
+.pp-quick button:hover { border-color:var(--accent); color:var(--accent); }
+.pp-foot { display:flex; gap:6px; }
+.pp-foot .btn { flex:1; }
+
+/* Страница активности */
+#page-pulse .export-bar {
+  display:flex; gap:8px; align-items:center; flex-wrap:wrap;
+}
+.pulse-stat-row {
+  display:grid;
+  grid-template-columns:repeat(4,1fr);
+  gap:8px;
+}
+
+/* Таблица ответов */
+#pulse-answers-tb td:nth-child(4) { max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.skipped-row td { opacity:.45; }
+</style>
+
+
+<!-- ═══ HTML МОДАЛКИ PULSE (добавить в конец body) ═══ -->
+
+<!-- Всплывающий вопрос -->
+<div id="pulse-popup">
+  <div class="pp-head">
+    <span class="pp-title">🎯 Что делаете прямо сейчас?</span>
+    <span class="pp-timer" id="pp-countdown">10:00</span>
+  </div>
+  <div class="pp-body">
+    <div class="pp-question">Опишите своими словами чем вы заняты:</div>
+    <div class="pp-task-hint" id="pp-task-hint" style="display:none">
+      Активная задача: <span id="pp-task-name"></span>
+    </div>
+    <input id="pp-input" placeholder="Пишу отчёт / Совещание / Разбираю почту…"
+           onkeydown="if(event.key==='Enter')submitPulse()">
+    <!-- Быстрые варианты — часто используемые ответы -->
+    <div class="pp-quick" id="pp-quick-btns"></div>
+    <div class="pp-foot">
+      <button class="btn bg" onclick="skipPulse()">Пропустить</button>
+      <button class="btn bp" onclick="submitPulse()">Ответить →</button>
+    </div>
+  </div>
+</div>
+
+<!-- Страница активности -->
+<div id="page-pulse" class="page">
+
+  <!-- Экспорт -->
+  <div class="export-bar">
+    <span class="muted">Журнал активности (Pulse)</span>
+    <input type="date" id="pulse-from" style="width:145px">
+    <span class="muted">—</span>
+    <input type="date" id="pulse-to" style="width:145px">
+    <button class="bxs" onclick="loadPulsePage()">↺ обновить</button>
+    <div class="mla flex gap8">
+      <button class="btn bg" onclick="exportCSV()">⬇ Скачать CSV</button>
+      <button class="btn bp" onclick="nav('pulse-settings')" style="font-size:11px">⚙ Настройки</button>
+    </div>
+  </div>
+
+  <!-- Статистика дня -->
+  <div class="pulse-stat-row">
+    <div class="scard"><div class="slabel">Вопросов задано</div><div class="sval" id="ps-total">—</div></div>
+    <div class="scard"><div class="slabel">Отвечено</div><div class="sval" id="ps-answered" style="color:var(--ok)">—</div></div>
+    <div class="scard"><div class="slabel">Пропущено</div><div class="sval" id="ps-skipped" style="color:var(--warn)">—</div></div>
+    <div class="scard"><div class="slabel">Сред. реакция</div><div class="sval mono" id="ps-resp">—</div></div>
+  </div>
+
+  <!-- Таблица ответов -->
+  <div class="panel">
+    <div class="ph">Хронология активности</div>
+    <table>
+      <thead><tr>
+        <th>Время</th>
+        <th>Задача</th>
+        <th>Чем занят</th>
+        <th>Реакция</th>
+      </tr></thead>
+      <tbody id="pulse-answers-tb"></tbody>
+    </table>
+  </div>
+
+  <!-- Облако активностей (часто встречающиеся слова) -->
+  <div class="panel">
+    <div class="ph">Частые активности <span class="muted" style="margin-left:8px;font-size:10px;text-transform:none">топ за период</span></div>
+    <div id="pulse-cloud" class="pb" style="display:flex;flex-wrap:wrap;gap:8px;min-height:40px"></div>
+  </div>
+</div>
+
+<!-- Страница настроек Pulse -->
+<div id="page-pulse-settings" class="page">
+  <div class="flex gap8" style="align-items:center">
+    <span class="muted">Настройки Pulse</span>
+    <button class="bxs" onclick="nav('pulse')" style="margin-left:auto">← Назад</button>
+  </div>
+  <div class="panel" style="max-width:400px">
+    <div class="ph">Интервал вопросов</div>
+    <div class="pb">
+      <div class="field"><label>Спрашивать каждые (минут)</label>
+        <select id="ps-interval" style="width:160px">
+          <option value="15">15 минут</option>
+          <option value="25" selected>25 минут (Pomodoro)</option>
+          <option value="30">30 минут</option>
+          <option value="45">45 минут</option>
+          <option value="60">60 минут</option>
+        </select>
+      </div>
+      <div class="field" style="display:flex;align-items:center;gap:8px">
+        <input type="checkbox" id="ps-enabled" style="width:auto" checked>
+        <label style="margin:0;cursor:pointer" for="ps-enabled">Включить периодические вопросы</label>
+      </div>
+      <div style="margin-top:4px">
+        <button class="btn bp" onclick="savePulseSettings()">Сохранить</button>
+      </div>
+      <div class="muted" style="margin-top:10px;line-height:1.7">
+        Вопросы задаются только в рабочее время (8:00–19:00).<br>
+        На ответ есть 10 минут, затем вопрос считается пропущенным.<br>
+        Ваши ответы попадают в журнал и CSV-отчёт.
+      </div>
+    </div>
+  </div>
+
+  <!-- Быстрые ответы (настройка) -->
+  <div class="panel" style="max-width:400px">
+    <div class="ph">Быстрые ответы <span class="muted" style="font-size:10px;text-transform:none;margin-left:6px">появятся в popup</span></div>
+    <div class="pb">
+      <div id="quick-list" style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px"></div>
+      <div style="display:flex;gap:6px">
+        <input id="quick-new" placeholder="Новый быстрый ответ…" onkeydown="if(event.key==='Enter')addQuickAnswer()">
+        <button class="btn bg" onclick="addQuickAnswer()">+</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══ JS (добавить в <script>) ═══ -->
+<script>
+// ════════════════════════════════════════════════════════
+//  PULSE — СОСТОЯНИЕ
+// ════════════════════════════════════════════════════════
+const PS = {
+  pendingId     : null,
+  countdownIv   : null,
+  pollIv        : null,
+  countdownSec  : 600,  // 10 минут
+  quickAnswers  : JSON.parse(localStorage.getItem('pulse_quick') ||
+    '["Пишу отчёт","Совещание","Анализирую данные","Разбираю почту","Телефонный звонок"]'),
+};
+
+// ════════════════════════════════════════════════════════
+//  POLLING — проверка pending вопроса
+// ════════════════════════════════════════════════════════
+function startPulsePolling() {
+  // Проверяем каждые 60 сек — есть ли вопрос от сервера
+  PS.pollIv = setInterval(checkPulse, 60_000);
+  checkPulse(); // сразу при входе
+}
+
+async function checkPulse() {
+  const r = await api('GET', '/pulse/pending');
+  if (!r.ok || !r.data || !r.data.id) return;
+  if (PS.pendingId === r.data.id) return; // уже показываем
+  showPulsePopup(r.data);
+}
+
+// ════════════════════════════════════════════════════════
+//  POPUP
+// ════════════════════════════════════════════════════════
+function showPulsePopup(question) {
+  PS.pendingId = question.id;
+
+  // Подсказка об активной задаче (из таймера)
+  const hint = document.getElementById('pp-task-hint');
+  const tn   = document.getElementById('pp-task-name');
+  const timerTask = document.getElementById('timer-task-name')?.textContent;
+  if (S.timerActive && timerTask) {
+    hint.style.display = '';
+    tn.textContent = timerTask;
+  } else {
+    hint.style.display = 'none';
+  }
+
+  // Быстрые кнопки
+  const qb = document.getElementById('pp-quick-btns');
+  qb.innerHTML = PS.quickAnswers.map(a =>
+    `<button onclick="ppQuick(${JSON.stringify(esc(a))})">${esc(a)}</button>`
+  ).join('');
+
+  document.getElementById('pp-input').value = '';
+  document.getElementById('pulse-popup').classList.add('show');
+  document.getElementById('pp-input').focus();
+
+  // Таймер обратного отсчёта
+  PS.countdownSec = 600;
+  clearInterval(PS.countdownIv);
+  PS.countdownIv = setInterval(() => {
+    PS.countdownSec--;
+    const m = Math.floor(PS.countdownSec / 60);
+    const s = PS.countdownSec % 60;
+    document.getElementById('pp-countdown').textContent = `${pad(m)}:${pad(s)}`;
+    if (PS.countdownSec <= 0) {
+      clearInterval(PS.countdownIv);
+      hidePulsePopup();
+    }
+  }, 1000);
+
+  // Звуковой сигнал (тихий, через Web Audio API)
+  playBeep();
+}
+
+function hidePulsePopup() {
+  document.getElementById('pulse-popup').classList.remove('show');
+  clearInterval(PS.countdownIv);
+  PS.pendingId = null;
+}
+
+function ppQuick(text) {
+  document.getElementById('pp-input').value = text;
+  document.getElementById('pp-input').focus();
+}
+
+async function submitPulse() {
+  const activity = document.getElementById('pp-input').value.trim();
+  if (!activity) { document.getElementById('pp-input').focus(); return; }
+  if (!PS.pendingId) { hidePulsePopup(); return; }
+
+  // Добавить в быстрые если новый
+  if (!PS.quickAnswers.includes(activity) && activity.length < 40) {
+    PS.quickAnswers.unshift(activity);
+    if (PS.quickAnswers.length > 8) PS.quickAnswers.pop();
+    localStorage.setItem('pulse_quick', JSON.stringify(PS.quickAnswers));
+  }
+
+  const r = await api('POST', `/pulse/${PS.pendingId}/answer`, {
+    activity,
+    task_id: S.timerActive ? (S.currentTaskId || null) : null,
+  });
+  if (r.ok) {
+    hidePulsePopup();
+    toast('✓ Записано');
+  } else {
+    toast(r.data?.error || 'Ошибка записи');
+  }
+}
+
+async function skipPulse() {
+  if (!PS.pendingId) { hidePulsePopup(); return; }
+  await api('POST', `/pulse/${PS.pendingId}/answer`, { activity: '', skipped: true });
+  hidePulsePopup();
+}
+
+// Тихий звуковой сигнал через Web Audio
+function playBeep() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.frequency.value = 660;
+    osc.type = 'sine';
+    gain.gain.setValueAtTime(0.15, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.4);
+  } catch {}
+}
+
+// ════════════════════════════════════════════════════════
+//  СТРАНИЦА АКТИВНОСТИ
+// ════════════════════════════════════════════════════════
+
+// Инициализация дат при загрузке
+function initPulseDates() {
+  const today = todayStr();
+  document.getElementById('pulse-from').value = today;
+  document.getElementById('pulse-to').value   = today;
+}
+
+async function loadPulsePage() {
+  const from = document.getElementById('pulse-from').value || todayStr();
+  const to   = document.getElementById('pulse-to').value   || todayStr();
+
+  const r = await api('GET', `/pulse/log?date_from=${from}&date_to=${to}`);
+  if (!r.ok) return;
+
+  const items = r.data;
+
+  // Статистика
+  const answered = items.filter(x => !x.skipped && x.activity);
+  const skipped  = items.filter(x => x.skipped);
+  const avgResp  = answered.length
+    ? Math.round(answered.reduce((a,x) => a + (x.response_s||0), 0) / answered.length)
+    : 0;
+
+  document.getElementById('ps-total').textContent    = items.length;
+  document.getElementById('ps-answered').textContent = answered.length;
+  document.getElementById('ps-skipped').textContent  = skipped.length;
+  document.getElementById('ps-resp').textContent     = avgResp + 'с';
+
+  // Таблица
+  document.getElementById('pulse-answers-tb').innerHTML = items.map(x => `
+    <tr class="${x.skipped ? 'skipped-row' : ''}">
+      <td class="mono">${x.asked_at.slice(11,16)}</td>
+      <td>${x.task_title ? esc(x.task_title) : '<span style="color:var(--muted)">—</span>'}</td>
+      <td>${x.skipped ? '<span style="color:var(--muted)">пропущено</span>' : esc(x.activity||'')}</td>
+      <td class="mono" style="color:var(--text2)">${x.response_s != null ? x.response_s+'с' : '—'}</td>
+    </tr>`).join('');
+
+  // Облако активностей
+  buildActivityCloud(answered.map(x => x.activity));
+}
+
+function buildActivityCloud(activities) {
+  // Считаем частоту слов
+  const freq = {};
+  activities.forEach(a => {
+    a.toLowerCase().split(/[\s,;]+/).forEach(w => {
+      if (w.length > 3) freq[w] = (freq[w]||0) + 1;
+    });
+  });
+  const sorted = Object.entries(freq).sort((a,b)=>b[1]-a[1]).slice(0,20);
+  const maxF = sorted[0]?.[1] || 1;
+
+  document.getElementById('pulse-cloud').innerHTML = sorted.map(([w,c]) => {
+    const size = 10 + Math.round((c/maxF) * 10);
+    const opacity = 0.4 + (c/maxF) * 0.6;
+    return `<span style="font-size:${size}px;opacity:${opacity};color:var(--accent);cursor:default"
+                  title="${c} раз">${esc(w)}</span>`;
+  }).join('');
+}
+
+// ════════════════════════════════════════════════════════
+//  ЭКСПОРТ CSV
+// ════════════════════════════════════════════════════════
+async function exportCSV() {
+  const from = document.getElementById('pulse-from').value || todayStr();
+  const to   = document.getElementById('pulse-to').value   || todayStr();
+
+  // Скачиваем через прямую ссылку с токеном
+  const url = `/pulse/export?date_from=${from}&date_to=${to}`;
+
+  // Fetch + Blob — работает без открытия нового окна
+  const resp = await fetch(url, {
+    headers: { 'Authorization': 'Bearer ' + S.token }
+  });
+  if (!resp.ok) { toast('Ошибка экспорта'); return; }
+
+  const blob = await resp.blob();
+  const a    = document.createElement('a');
+  a.href     = URL.createObjectURL(blob);
+  a.download = `activity_${from}_${to}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
+  toast('CSV скачан');
+}
+
+// ════════════════════════════════════════════════════════
+//  НАСТРОЙКИ PULSE
+// ════════════════════════════════════════════════════════
+async function loadPulseSettings() {
+  const r = await api('GET', '/pulse/settings');
+  if (!r.ok) return;
+  document.getElementById('ps-interval').value = r.data.interval_min;
+  document.getElementById('ps-enabled').checked = r.data.enabled;
+  renderQuickList();
+}
+
+async function savePulseSettings() {
+  const r = await api('PUT', '/pulse/settings', {
+    interval_min: +document.getElementById('ps-interval').value,
+    enabled:       document.getElementById('ps-enabled').checked,
+  });
+  if (r.ok) toast('Настройки сохранены');
+  else toast(r.data?.error || 'Ошибка');
+}
+
+function renderQuickList() {
+  document.getElementById('quick-list').innerHTML =
+    PS.quickAnswers.map((a, i) => `
+      <div style="display:flex;gap:6px;align-items:center">
+        <span style="flex:1;font-size:12px">${esc(a)}</span>
+        <button class="bxs" onclick="removeQuick(${i})" style="padding:1px 7px;color:var(--warn)">×</button>
+      </div>`).join('');
+}
+
+function addQuickAnswer() {
+  const inp = document.getElementById('quick-new');
+  const v   = inp.value.trim();
+  if (!v || PS.quickAnswers.includes(v)) return;
+  PS.quickAnswers.push(v);
+  localStorage.setItem('pulse_quick', JSON.stringify(PS.quickAnswers));
+  inp.value = '';
+  renderQuickList();
+}
+
+function removeQuick(i) {
+  PS.quickAnswers.splice(i, 1);
+  localStorage.setItem('pulse_quick', JSON.stringify(PS.quickAnswers));
+  renderQuickList();
+}
+
+// ════════════════════════════════════════════════════════
+//  ИНИЦИАЛИЗАЦИЯ
+// ════════════════════════════════════════════════════════
+// Добавить в doLogin() после S.token = ...:
+//   startPulsePolling();
+//   initPulseDates();
+//   loadPulseSettings();
+
+// Добавить 'pulse' и 'pulse-settings' в массив PAGES
+// В nav() добавить:
+//   if(p==='pulse') { loadPulsePage(); }
+//   if(p==='pulse-settings') { loadPulseSettings(); }
+</script>

@@ -1,0 +1,27 @@
+[package]
+name = "server"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tiny_http.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rusqlite.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+sha2.workspace = true
+hex.workspace = true
+protocol = { path = "../protocol" }
+event_bus = { path = "../event_bus" }
+database = { path = "../database" }
+monitor = { path = "../monitor" }
+tray-icon.workspace = true
+tao.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+
+[[bin]]
+name = "server"
+path = "src/main.rs"

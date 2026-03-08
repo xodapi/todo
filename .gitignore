@@ -1,0 +1,10 @@
+/target
+**/*.rs.bk
+Cargo.lock
+.env
+*.db
+*.db-journal
+/static/lib/*.js
+kb_notes/
+.DS_Store
+Thumbs.db

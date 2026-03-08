@@ -1,0 +1,1814 @@
+<!DOCTYPE html>
+<html lang="ru">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Система управления задачами</title>
+  <script src="/lib/marked.min.js"></script>
+  <script src="/lib/mermaid.min.js"></script>
+  <style>
+    :root {
+      --bg: #0f0f0f;
+      --surface: #1a1a1a;
+      --border: #2a2a2a;
+      --accent: #4f8ef7;
+      --warn: #e05a2b;
+      --ok: #3dba78;
+      --muted: #555;
+      --text: #d8d8d8;
+      --text2: #888;
+      --radius: 6px;
+      --mono: 'JetBrains Mono', 'Fira Code', monospace;
+    }
+
+    :root[data-theme="light"] {
+      --bg: #f5f5f7;
+      --surface: #ffffff;
+      --border: #e0e0e0;
+      --accent: #0066cc;
+      --warn: #d93025;
+      --ok: #1e8e3e;
+      --muted: #9e9e9e;
+      --text: #1d1d1f;
+      --text2: #86868b;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font: 13px/1.6 system-ui, -apple-system, sans-serif;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      transition: background-color .3s, color .3s;
+    }
+
+    /* ── Верхняя полоса ── */
+    #topbar {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 0 20px;
+      height: 44px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    #topbar .logo {
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--accent);
+      letter-spacing: 2px;
+      text-transform: uppercase;
+    }
+
+    #topbar nav {
+      display: flex;
+      gap: 2px;
+    }
+
+    #topbar nav button {
+      background: none;
+      border: none;
+      color: var(--text2);
+      padding: 4px 12px;
+      border-radius: var(--radius);
+      cursor: pointer;
+      font-size: 12px;
+      transition: .15s;
+    }
+
+    #topbar nav button:hover {
+      color: var(--text);
+      background: var(--border);
+    }
+
+    #topbar nav button.active {
+      color: var(--accent);
+      background: #1d2d45;
+    }
+
+    #topbar .spacer {
+      flex: 1;
+    }
+
+    #topbar .user-badge {
+      font-size: 11px;
+      color: var(--text2);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    #topbar .user-badge span {
+      color: var(--text);
+    }
+
+    #topbar .user-badge button {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--text2);
+      padding: 2px 10px;
+      border-radius: var(--radius);
+      cursor: pointer;
+      font-size: 11px;
+    }
+
+    #topbar .user-badge button:hover {
+      border-color: var(--warn);
+      color: var(--warn);
+    }
+
+    /* ── Таймер в топбаре ── */
+    #timer-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-family: var(--mono);
+      font-size: 11px;
+    }
+
+    #timer-display {
+      color: var(--ok);
+      min-width: 56px;
+    }
+
+    #timer-display.running {
+      animation: blink 2s step-end infinite;
+    }
+
+    @keyframes blink {
+      50% {
+        opacity: .4;
+      }
+    }
+
+    .btn-xs {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--text2);
+      padding: 2px 8px;
+      border-radius: var(--radius);
+      cursor: pointer;
+      font-size: 11px;
+    }
+
+    .btn-xs:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .btn-xs.stop {
+      border-color: var(--border);
+    }
+
+    .btn-xs.stop:hover {
+      border-color: var(--warn);
+      color: var(--warn);
+    }
+
+    /* ── Основной контент ── */
+    #main {
+      flex: 1;
+      overflow: hidden;
+      display: flex;
+    }
+
+    .page {
+      display: none;
+      width: 100%;
+      padding: 20px;
+      overflow-y: auto;
+    }
+
+    .page.active {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    /* ── Карточки / панели ── */
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+    }
+
+    .panel-head {
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--border);
+      font-size: 11px;
+      color: var(--text2);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .panel-body {
+      padding: 12px 16px;
+    }
+
+    /* ── Входные поля ── */
+    input,
+    select,
+    textarea {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 6px 10px;
+      border-radius: var(--radius);
+      font-size: 12px;
+      width: 100%;
+      outline: none;
+      transition: border-color .15s;
+    }
+
+    input:focus,
+    select:focus,
+    textarea:focus {
+      border-color: var(--accent);
+    }
+
+    textarea {
+      resize: vertical;
+      min-height: 60px;
+      font-family: inherit;
+    }
+
+    label {
+      font-size: 11px;
+      color: var(--text2);
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    .field {
+      margin-bottom: 10px;
+    }
+
+    .row {
+      display: flex;
+      gap: 10px;
+    }
+
+    .row .field {
+      flex: 1;
+    }
+
+    /* ── Кнопки ── */
+    .btn {
+      padding: 6px 16px;
+      border-radius: var(--radius);
+      border: none;
+      cursor: pointer;
+      font-size: 12px;
+      transition: .15s;
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color: #fff;
+    }
+
+    .btn-primary:hover {
+      opacity: .85;
+    }
+
+    .btn-ghost {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--text2);
+    }
+
+    .btn-ghost:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .btn-danger {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--text2);
+    }
+
+    .btn-danger:hover {
+      border-color: var(--warn);
+      color: var(--warn);
+    }
+
+    /* ── Kanban ── */
+    #kanban {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 10px;
+    }
+
+    .k-col {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      min-height: 300px;
+    }
+
+    .k-col-head {
+      padding: 8px 12px;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--text2);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .k-col-head .count {
+      background: var(--border);
+      border-radius: 10px;
+      padding: 1px 7px;
+      font-size: 10px;
+    }
+
+    .k-col-body {
+      padding: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .k-card {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 8px 10px;
+      cursor: pointer;
+      transition: border-color .15s;
+    }
+
+    .k-card:hover {
+      border-color: var(--accent);
+    }
+
+    .k-card .k-title {
+      font-size: 12px;
+      line-height: 1.4;
+      margin-bottom: 4px;
+    }
+
+    .k-card .k-meta {
+      font-size: 10px;
+      color: var(--text2);
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .k-card .prio {
+      font-family: var(--mono);
+      color: var(--accent);
+    }
+
+    .k-card .urgent {
+      color: var(--warn);
+    }
+
+    .k-card .assigned {
+      color: var(--ok);
+    }
+
+    /* цветные полосы по статусу */
+    .k-card[data-status="inbox"] {
+      border-left: 2px solid var(--muted);
+    }
+
+    .k-card[data-status="backlog"] {
+      border-left: 2px solid #6b7aad;
+    }
+
+    .k-card[data-status="approved"] {
+      border-left: 2px solid var(--ok);
+    }
+
+    .k-card[data-status="in_progress"] {
+      border-left: 2px solid var(--accent);
+    }
+
+    .k-card[data-status="review"] {
+      border-left: 2px solid #c8a227;
+    }
+
+    .k-card[data-status="done"] {
+      border-left: 2px solid var(--muted);
+      opacity: .6;
+    }
+
+    /* ── Таблица задач ── */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+
+    th {
+      text-align: left;
+      padding: 6px 10px;
+      color: var(--text2);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      border-bottom: 1px solid var(--border);
+      font-weight: 400;
+    }
+
+    td {
+      padding: 7px 10px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+
+    tr:hover td {
+      background: var(--border);
+      color: var(--accent);
+    }
+
+    tr:hover .badge {
+      filter: brightness(1.2);
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 1px 7px;
+      border-radius: 10px;
+      font-size: 10px;
+      font-family: var(--mono);
+    }
+
+    .badge-inbox {
+      background: #252525;
+      color: var(--text2);
+    }
+
+    .badge-backlog {
+      background: #1e2240;
+      color: #6b7aad;
+    }
+
+    .badge-approved {
+      background: #162b1e;
+      color: var(--ok);
+    }
+
+    .badge-in_progress {
+      background: #1d2d45;
+      color: var(--accent);
+    }
+
+    .badge-review {
+      background: #2b2413;
+      color: #c8a227;
+    }
+
+    .badge-done {
+      background: #1a1a1a;
+      color: var(--muted);
+    }
+
+    .badge-cancelled {
+      background: #2b1a1a;
+      color: var(--warn);
+    }
+
+    /* ── Чат ── */
+    #chat-page {
+      display: none;
+      flex-direction: column;
+    }
+
+    #chat-page.active {
+      display: flex;
+    }
+
+    #chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .msg {
+      max-width: 70%;
+    }
+
+    .msg.mine {
+      align-self: flex-end;
+    }
+
+    .msg .msg-meta {
+      font-size: 10px;
+      color: var(--text2);
+      margin-bottom: 2px;
+    }
+
+    .msg.mine .msg-meta {
+      text-align: right;
+    }
+
+    .msg .msg-body {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 7px 12px;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .msg.mine .msg-body {
+      background: #1d2d45;
+      border-color: #2d3f5f;
+    }
+
+    #chat-input-row {
+      padding: 12px 20px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      gap: 8px;
+    }
+
+    #chat-input-row input {
+      flex: 1;
+    }
+
+    /* ── Аналитика / Любищев ── */
+    .stat-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+    }
+
+    .stat-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+    }
+
+    .stat-card .stat-label {
+      font-size: 10px;
+      color: var(--text2);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 6px;
+    }
+
+    .stat-card .stat-value {
+      font-family: var(--mono);
+      font-size: 24px;
+      color: var(--text);
+    }
+
+    .stat-card .stat-sub {
+      font-size: 11px;
+      color: var(--text2);
+      margin-top: 4px;
+    }
+
+    .bar-container {
+      margin-top: 8px;
+      background: var(--border);
+      border-radius: 3px;
+      height: 6px;
+      overflow: hidden;
+    }
+
+    .bar {
+      height: 100%;
+      border-radius: 3px;
+      transition: width .4s;
+    }
+
+    .bar-c1 {
+      background: var(--ok);
+    }
+
+    /* ── Knowledge Base Markdown Styles ── */
+    #kb-note-preview {
+      padding: 10px;
+      overflow-y: auto;
+      line-height: 1.6;
+      font-size: 14px;
+      color: var(--text);
+    }
+
+    #kb-note-preview h1,
+    #kb-note-preview h2,
+    #kb-note-preview h3 {
+      margin-top: 1.5em;
+      margin-bottom: 0.5em;
+      color: var(--accent);
+    }
+
+    #kb-note-preview code {
+      background: rgba(255, 255, 255, 0.05);
+      padding: 2px 4px;
+      border-radius: 4px;
+      font-family: var(--mono);
+    }
+
+    #kb-note-preview pre {
+      background: rgba(0, 0, 0, 0.2);
+      padding: 10px;
+      border-radius: 6px;
+      overflow-x: auto;
+      margin: 10px 0;
+    }
+
+    #kb-note-preview ul,
+    #kb-note-preview ol {
+      margin-left: 20px;
+      margin-bottom: 10px;
+    }
+
+    #kb-note-preview blockquote {
+      border-left: 4px solid var(--accent);
+      padding-left: 15px;
+      color: var(--text2);
+      font-style: italic;
+      margin: 10px 0;
+    }
+
+    /* Mermaid Dark Mode */
+    .mermaid {
+      background: white;
+      /* Easier to read for now, or we can use dark theme */
+      border-radius: 4px;
+      padding: 10px;
+      margin: 10px 0;
+    }
+
+    .bar-c2 {
+      background: var(--accent);
+    }
+
+    .bar-c3 {
+      background: var(--muted);
+    }
+
+    /* ── Модальное окно ── */
+    #modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, .7);
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #modal-overlay.open {
+      display: flex;
+    }
+
+    #modal {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      width: 480px;
+      max-height: 85vh;
+      overflow-y: auto;
+    }
+
+    #modal-head {
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    #modal-head h3 {
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    #modal-head button {
+      background: none;
+      border: none;
+      color: var(--text2);
+      cursor: pointer;
+      font-size: 18px;
+      line-height: 1;
+    }
+
+    #modal-head button:hover {
+      color: var(--text);
+    }
+
+    #modal-body {
+      padding: 16px 20px;
+    }
+
+    #modal-foot {
+      padding: 12px 20px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+
+    /* ── Логин ── */
+    #login-screen {
+      position: fixed;
+      inset: 0;
+      background: var(--bg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 200;
+    }
+
+    #login-box {
+      width: 320px;
+    }
+
+    #login-box .logo-big {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--accent);
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      margin-bottom: 24px;
+    }
+
+    #login-box h2 {
+      font-size: 18px;
+      font-weight: 400;
+      margin-bottom: 20px;
+    }
+
+    #login-error {
+      color: var(--warn);
+      font-size: 11px;
+      margin-top: 8px;
+      min-height: 16px;
+    }
+
+    /* ── Утилиты ── */
+    .flex {
+      display: flex;
+    }
+
+    .gap8 {
+      gap: 8px;
+    }
+
+    .ml-auto {
+      margin-left: auto;
+    }
+
+    .text-muted {
+      color: var(--text2);
+      font-size: 11px;
+    }
+
+    .mono {
+      font-family: var(--mono);
+    }
+
+    .scroll {
+      overflow-y: auto;
+    }
+
+    #toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 10px 18px;
+      font-size: 12px;
+      z-index: 300;
+      opacity: 0;
+      transition: opacity .2s;
+      pointer-events: none;
+    }
+
+    #toast.show {
+      opacity: 1;
+    }
+
+    /* ── Статус-бар ── */
+    #statusbar {
+      height: 24px;
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      padding: 0 20px;
+      font-size: 10px;
+      color: var(--text2);
+      gap: 16px;
+      flex-shrink: 0;
+    }
+
+    #statusbar span b {
+      color: var(--text);
+    }
+  </style>
+</head>
+
+<body>
+
+  <!-- ── Логин ── -->
+  <div id="login-screen">
+    <div id="login-box">
+      <div class="logo-big">// task.server</div>
+      <h2>Вход в систему</h2>
+      <div class="field"><label>Логин</label><input id="l-user" type="text" placeholder="username"
+          autocomplete="username"></div>
+      <div class="field"><label>Пароль</label><input id="l-pass" type="password" placeholder="••••••••"
+          autocomplete="current-password"></div>
+      <button class="btn btn-primary" style="width:100%" onclick="doLogin()">Войти</button>
+      <div id="login-error"></div>
+    </div>
+  </div>
+
+  <!-- ── Топбар ── -->
+  <div id="topbar">
+    <div class="logo">// tasks</div>
+    <nav>
+      <button class="active" onclick="nav('kanban')">Kanban</button>
+      <button onclick="nav('list')">Список</button>
+      <button onclick="nav('pulse')">Цифровой пульс</button>
+      <button onclick="nav('kb')">База знаний</button>
+      <button onclick="nav('chat')">Чат</button>
+      <button onclick="nav('files')">Файлы</button>
+      <button id="admin-btn" onclick="nav('admin')" style="display:none">Админ</button>
+    </nav>
+    <div class="spacer"></div>
+    <!-- Таймер Любищева -->
+    <div id="timer-bar">
+      <span id="timer-display">00:00</span>
+      <button class="btn-xs" id="timer-btn" onclick="timerToggle()" title="Запуск учета рабочего времени">▶ Таймер
+        (старт)</button>
+      <select id="timer-cat" style="width:130px;padding:2px 6px;font-size:11px">
+        <option value="1">① Творческая</option>
+        <option value="2">② Вспомогат.</option>
+        <option value="3">③ Накладные</option>
+      </select>
+    </div>
+    <div id="privacy-toggle"
+      style="display:flex;align-items:center;gap:8px;margin-right:20px;cursor:pointer;background:var(--bg);padding:4px 10px;border-radius:20px;border:1px solid var(--border)"
+      onclick="togglePrivacy()">
+      <span id="privacy-icon" style="font-size:14px">🔓</span>
+      <span id="privacy-text"
+        style="font-size:10px;font-family:var(--mono);text-transform:uppercase;letter-spacing:1px;color:var(--text2)">Work</span>
+    </div>
+    <div class="user-badge">
+      <button class="btn-xs" style="font-size:14px;padding:0 6px" onclick="toggleTheme()"
+        title="Переключить тему">🌓</button>
+      роль: <span id="role-badge">—</span>
+      <button onclick="doLogout()">выйти</button>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const saved = localStorage.getItem('theme') || 'dark';
+      document.documentElement.setAttribute('data-theme', saved);
+    })();
+    function toggleTheme() {
+      const cur = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', cur);
+      localStorage.setItem('theme', cur);
+    }
+  </script>
+
+  <!-- ── Основной контент ── -->
+  <div id="main">
+
+    <!-- Knowledge Base Page -->
+    <section id="page-kb" class="page">
+      <div style="display:grid;grid-template-columns:250px 1fr 300px;gap:20px;height:calc(100vh - 120px)">
+        <!-- Tree Sidebar -->
+        <div class="card" style="display:flex;flex-direction:column">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:15px">
+            <h3 style="margin:0">Древо</h3>
+            <button class="btn-xs" onclick="kbNewNote()">+</button>
+          </div>
+          <div id="kb-tree" style="flex:1;overflow-y:auto;font-size:13px"></div>
+        </div>
+
+        <!-- Editor -->
+        <div class="card" style="display:flex;flex-direction:column">
+          <input id="kb-note-title" type="text" placeholder="Заголовок..."
+            style="font-size:20px;margin-bottom:10px;background:transparent;border:none;border-bottom:1px solid var(--border);color:var(--text1)">
+
+          <div style="flex:1;display:flex;flex-direction:column;min-height:0">
+            <div style="display:flex;gap:10px;margin-bottom:10px">
+              <button class="btn-xs" id="kb-btn-edit" onclick="kbSetMode('edit')"
+                style="background:var(--accent)">Правка</button>
+              <button class="btn-xs" id="kb-btn-preview" onclick="kbSetMode('preview')">Просмотр</button>
+            </div>
+
+            <textarea id="kb-note-content"
+              style="flex:1;background:transparent;border:none;resize:none;color:var(--text1);font-family:inherit;line-height:1.6"
+              placeholder="Текст заметки..."></textarea>
+
+            <div id="kb-note-preview"
+              style="display:none;flex:1;background:var(--bg);border-radius:4px;border:1px solid var(--border)"></div>
+          </div>
+
+          <div style="margin-top:10px;display:flex;justify-content:space-between">
+            <button class="btn-sm" onclick="kbSaveNote()">Сохранить</button>
+            <button class="btn-sm btn-ghost" onclick="kbDeleteNote()" style="color:var(--red)">Удалить</button>
+          </div>
+        </div>
+
+        <!-- Graph/Tags -->
+        <div style="display:flex;flex-direction:column;gap:20px">
+          <div class="card" style="flex:1;display:flex;flex-direction:column">
+            <h3 style="margin:0 0 10px 0">Граф связей</h3>
+            <div id="kb-graph" style="flex:1;background:var(--bg);border-radius:8px;position:relative;overflow:hidden">
+              <canvas id="kb-graph-canvas"></canvas>
+            </div>
+          </div>
+          <div class="card" style="height:150px">
+            <h3 style="margin:0 0 10px 0">Теги</h3>
+            <div id="kb-tags" style="display:flex;flex-wrap:wrap;gap:5px"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+    <!-- Kanban -->
+    <div id="page-kanban" class="page active">
+      <div class="flex gap8" style="align-items:center">
+        <span style="font-size:11px;color:var(--text2)">Kanban-доска</span>
+        <div class="ml-auto flex gap8">
+          <button class="btn btn-ghost" onclick="loadTasks()">↺ обновить</button>
+          <button class="btn btn-primary" onclick="openCreateTask()">+ задача</button>
+        </div>
+      </div>
+      <div id="kanban">
+        <div class="k-col" data-status="inbox">
+          <div class="k-col-head">Входящие <span class="count" id="cnt-inbox">0</span></div>
+          <div class="k-col-body" id="col-inbox"></div>
+        </div>
+        <div class="k-col" data-status="backlog">
+          <div class="k-col-head">Очередь (Бэклог) <span class="count" id="cnt-backlog">0</span></div>
+          <div class="k-col-body" id="col-backlog"></div>
+        </div>
+        <div class="k-col" data-status="approved">
+          <div class="k-col-head">Утверждено <span class="count" id="cnt-approved">0</span></div>
+          <div class="k-col-body" id="col-approved"></div>
+        </div>
+        <div class="k-col" data-status="in_progress">
+          <div class="k-col-head">В работе <span class="count" id="cnt-in_progress">0</span></div>
+          <div class="k-col-body" id="col-in_progress"></div>
+        </div>
+        <div class="k-col" data-status="review">
+          <div class="k-col-head">Проверка <span class="count" id="cnt-review">0</span></div>
+          <div class="k-col-body" id="col-review"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Список -->
+    <div id="page-list" class="page">
+      <div class="flex gap8" style="align-items:center">
+        <input id="filter-status" style="width:160px" placeholder="фильтр по статусу" oninput="renderList()">
+        <input id="filter-text" style="width:220px" placeholder="поиск по названию" oninput="renderList()">
+        <div class="ml-auto">
+          <button class="btn btn-primary" onclick="openCreateTask()">+ задача</button>
+        </div>
+      </div>
+      <div class="panel">
+        <table>
+          <thead>
+            <tr>
+              <th>Задача</th>
+              <th>Статус</th>
+              <th>Приоритет</th>
+              <th>Исполнитель</th>
+              <th>Срок</th>
+            </tr>
+          </thead>
+          <tbody id="task-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Хронометраж Любищева -->
+    <div id="page-lyubishchev" class="page">
+      <div class="flex gap8" style="align-items:center">
+        <span style="font-size:11px;color:var(--text2)">Хронометраж по Любищеву</span>
+        <select id="report-days" onchange="loadReport()" style="width:120px">
+          <option value="1">Сегодня</option>
+          <option value="7" selected>7 дней</option>
+          <option value="30">30 дней</option>
+        </select>
+        <button class="btn btn-ghost" onclick="loadReport()">↺</button>
+      </div>
+      <div class="stat-grid" id="stat-grid">
+        <div class="stat-card">
+          <div class="stat-label">Творческая (①)</div>
+          <div class="stat-value mono" id="s-c1">—</div>
+          <div class="bar-container">
+            <div class="bar bar-c1" id="bar-c1" style="width:0%"></div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Вспомогательная (②)</div>
+          <div class="stat-value mono" id="s-c2">—</div>
+          <div class="bar-container">
+            <div class="bar bar-c2" id="bar-c2" style="width:0%"></div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Накладные (③)</div>
+          <div class="stat-value mono" id="s-c3">—</div>
+          <div class="bar-container">
+            <div class="bar bar-c3" id="bar-c3" style="width:0%"></div>
+          </div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">КПД творческого времени <span id="eff-pct" class="mono"
+            style="color:var(--ok);margin-left:auto">—%</span></div>
+        <div class="panel-body">
+          <div class="bar-container" style="height:10px">
+            <div class="bar bar-c1" id="eff-bar" style="width:0%;height:100%"></div>
+          </div>
+          <div class="text-muted" style="margin-top:6px">КПД = Творческое / (Творческое + Вспомогательное) × 100</div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">Записи хронометража</div>
+        <table>
+          <thead>
+            <tr>
+              <th>Задача</th>
+              <th>Категория</th>
+              <th>Начало</th>
+              <th>Длительность</th>
+              <th>Заметка</th>
+            </tr>
+          </thead>
+          <tbody id="log-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Чат -->
+    <!-- ... existing chat ... -->
+
+    <!-- Цифровой пульс -->
+    <div id="page-pulse" class="page">
+      <div class="flex gap8" style="align-items:center">
+        <span style="font-size:11px;color:var(--text2)">Цифровой пульс (Мониторинг активности)</span>
+        <div class="ml-auto">
+          <button class="btn btn-ghost" onclick="loadPulseData()">↺ обновить</button>
+        </div>
+      </div>
+      <div class="stat-grid">
+        <div class="stat-card">
+          <div class="stat-label">Клавиатура (нажатий)</div>
+          <div class="stat-value mono" id="pulse-keys">0</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Мышь (метров)</div>
+          <div class="stat-value mono" id="pulse-mouse">0</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Активное окно</div>
+          <div class="stat-value" id="pulse-window"
+            style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">—</div>
+          <div class="stat-sub" id="pulse-process">—</div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">Последние действия</div>
+        <div class="panel-body" id="pulse-timeline"
+          style="font-family:var(--mono);font-size:11px;max-height:400px;overflow-y:auto">
+          Загрузка данных...
+        </div>
+      </div>
+    </div>
+
+    <!-- Файлы -->
+    <div id="page-files" class="page">
+      <div class="flex gap8" style="align-items:center">
+        <span style="font-size:11px;color:var(--text2)">Файлы</span>
+        <div class="ml-auto">
+          <input type="file" id="file-input" style="display:none" onchange="uploadFile()">
+          <button class="btn btn-primary" onclick="document.getElementById('file-input').click()">↑ загрузить</button>
+        </div>
+      </div>
+      <div class="panel">
+        <table>
+          <thead>
+            <tr>
+              <th>Имя файла</th>
+              <th>Загрузил</th>
+              <th>Размер</th>
+              <th>Дата</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="files-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Админ -->
+    <div id="page-admin" class="page">
+      <div class="flex gap8" style="align-items:center">
+        <span style="font-size:11px;color:var(--text2)">Управление пользователями</span>
+        <div class="ml-auto">
+          <button class="btn btn-primary" onclick="openCreateUser()">+ пользователь</button>
+        </div>
+      </div>
+      <div class="panel">
+        <table>
+          <thead>
+            <tr>
+              <th>Логин</th>
+              <th>Имя</th>
+              <th>Роль</th>
+              <th>Создан</th>
+            </tr>
+          </thead>
+          <tbody id="users-tbody"></tbody>
+        </table>
+      </div>
+      <div class="panel" style="max-width:360px">
+        <div class="panel-head">Смена пароля</div>
+        <div class="panel-body">
+          <div class="field"><label>Текущий пароль</label><input type="password" id="old-pass"></div>
+          <div class="field"><label>Новый пароль</label><input type="password" id="new-pass"></div>
+          <button class="btn btn-ghost" onclick="changePass()">Сменить</button>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- #main -->
+
+  <div id="statusbar">
+    <span>Задач: <b id="st-total">0</b></span>
+    <span>В работе: <b id="st-work">0</b></span>
+    <span>Сегодня отработано: <b id="st-time">00:00</b></span>
+    <span class="ml-auto">План: <b id="st-plan">8:00</b></span>
+    <span>Сессия: <b id="st-session">5 дней</b></span>
+  </div>
+
+  <!-- ── Модальное: задача ── -->
+  <div id="modal-overlay" onclick="if(event.target===this)closeModal()">
+    <div id="modal">
+      <div id="modal-head">
+        <h3 id="modal-title">Новая задача</h3>
+        <button onclick="closeModal()">×</button>
+      </div>
+      <div id="modal-body">
+        <input type="hidden" id="m-id">
+        <div class="field"><label>Название *</label><input id="m-title" placeholder="Что нужно сделать?"></div>
+        <div class="field"><label>Описание</label><textarea id="m-desc" rows="3"></textarea></div>
+        <div class="field"><label>Источник</label><input id="m-source" placeholder="поручение / регламент / инициатива">
+        </div>
+        <div class="row">
+          <div class="field"><label>Влияние (1-5)</label><input id="m-impact" type="number" min="1" max="5" value="3">
+          </div>
+          <div class="field"><label>Усилия (1-5)</label><input id="m-effort" type="number" min="1" max="5" value="3">
+          </div>
+        </div>
+        <div class="row">
+          <div class="field"><label>Срок</label><input id="m-deadline" type="date"></div>
+          <div class="field"><label>Статус</label>
+            <select id="m-status">
+              <option value="inbox">Входящие</option>
+              <option value="backlog">Очередь (Бэклог)</option>
+              <option value="approved">Утверждено</option>
+              <option value="in_progress">В работе</option>
+              <option value="review">Проверка</option>
+              <option value="done">Готово</option>
+              <option value="cancelled">Отменено</option>
+            </select>
+          </div>
+        </div>
+        <div id="user-info" style="display:none;align-items:center;gap:10px">
+          <div class="row">
+            <div class="field" style="flex:0 0 auto;display:flex;align-items:center;gap:6px;margin-top:4px">
+              <input type="checkbox" id="m-urgent" style="width:auto"> <label style="margin:0;cursor:pointer"
+                for="m-urgent">Срочно</label>
+            </div>
+            <div class="field" style="flex:0 0 auto;display:flex;align-items:center;gap:6px;margin-top:4px">
+              <input type="checkbox" id="m-important" style="width:auto" checked> <label style="margin:0;cursor:pointer"
+                for="m-important">Важно</label>
+            </div>
+          </div>
+          <div id="m-assign-row" class="field" style="display:none">
+            <label>Назначить</label>
+            <select id="m-assigned"></select>
+          </div>
+        </div>
+        <div id="modal-foot">
+          <button class="btn btn-danger" id="m-cancel-btn" onclick="cancelTask()" style="display:none">Отменить
+            задачу</button>
+          <button class="btn btn-ghost" onclick="closeModal()">Закрыть</button>
+          <button class="btn btn-primary" onclick="saveTask()">Сохранить</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Модальное: пользователь -->
+    <div id="user-modal-overlay" onclick="if(event.target===this)this.classList.remove('open')"
+      style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:100;align-items:center;justify-content:center">
+      <div
+        style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);width:340px;padding:20px">
+        <h3 style="margin-bottom:16px;font-weight:500">Новый пользователь</h3>
+        <div class="field"><label>Логин</label><input id="u-username"></div>
+        <div class="field"><label>Полное имя</label><input id="u-fullname"></div>
+        <div class="field"><label>Пароль</label><input type="password" id="u-password"></div>
+        <div class="field"><label>Роль</label>
+          <select id="u-role">
+            <option value="engineer">Инженер</option>
+            <option value="expert">Эксперт</option>
+            <option value="viewer">Наблюдатель</option>
+            <option value="admin">Администратор</option>
+          </select>
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:4px">
+          <button class="btn btn-ghost"
+            onclick="document.getElementById('user-modal-overlay').style.display='none'">Отмена</button>
+          <button class="btn btn-primary" onclick="createUser()">Создать</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="toast"></div>
+
+    <script>
+      // ── Состояние ────────────────────────────────────────────────────────────────
+      const S = {
+        token: null, role: null, userId: null, username: null,
+        tasks: [], users: [], messages: [], files: [],
+        timerActive: false, timerLogId: null, timerStart: null, timerInterval: null,
+        chatInterval: null, lastMsgAt: '1970-01-01 00:00:00',
+        currentPage: 'kanban',
+      };
+
+      // ── API ──────────────────────────────────────────────────────────────────────
+      async function api(method, path, body) {
+        const opts = { method, headers: { 'Content-Type': 'application/json' } };
+        if (S.token) opts.headers['Authorization'] = 'Bearer ' + S.token;
+        if (body) opts.body = JSON.stringify(body);
+        const r = await fetch(path, opts);
+        const json = await r.json().catch(() => ({}));
+        return { ok: r.ok, status: r.status, data: json };
+      }
+
+      async function apiUpload(path, file) {
+        const r = await fetch(path, {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + S.token, 'X-Filename': file.name },
+          body: file,
+        });
+        return { ok: r.ok, data: await r.json().catch(() => ({})) };
+      }
+
+      // ── Навигация ────────────────────────────────────────────────────────────────
+      function nav(page) {
+        S.currentPage = page;
+        document.querySelectorAll('.page').forEach(el => el.classList.remove('active'));
+        document.querySelectorAll('#topbar nav button').forEach(el => el.classList.remove('active'));
+        document.getElementById('page-' + page).classList.add('active');
+        const btns = document.querySelectorAll('#topbar nav button');
+        // Update labels to match current buttons: Kanban, Список, Пульс, БЗ, Чат, Файлы
+        const labels = ['kanban', 'list', 'pulse', 'kb', 'chat', 'files'];
+        const idx = labels.indexOf(page);
+        if (idx >= 0) btns[idx].classList.add('active');
+
+        if (page === 'kanban' || page === 'list') loadTasks();
+        if (page === 'pulse') loadPulseData();
+        if (page === 'kb') loadKb();
+        if (page === 'chat') startChat();
+        if (page === 'files') loadFiles();
+        if (page === 'admin') loadUsers();
+      }
+
+      // ── Логин / Логаут ───────────────────────────────────────────────────────────
+      async function doLogin() {
+        const r = await api('POST', '/auth/login', {
+          username: document.getElementById('l-user').value,
+          password: document.getElementById('l-pass').value,
+        });
+        if (r.ok) {
+          S.token = r.data.token; S.role = r.data.role;
+          S.userId = r.data.user_id; S.username = r.data.username;
+          document.getElementById('login-screen').style.display = 'none';
+          document.getElementById('role-badge').textContent = S.role;
+          if (S.role === 'admin') document.getElementById('admin-btn').style.display = '';
+          if (S.role === 'admin' || S.role === 'expert')
+            document.getElementById('m-assign-row').style.display = '';
+          loadTasks(); loadUsers();
+        } else {
+          document.getElementById('login-error').textContent = r.data.error || 'Ошибка входа';
+        }
+      }
+      document.getElementById('l-pass').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+
+      async function doLogout() {
+        await api('POST', '/auth/logout');
+        location.reload();
+      }
+
+      // ── Задачи ───────────────────────────────────────────────────────────────────
+      async function loadTasks() {
+        const r = await api('GET', '/tasks');
+        if (!r.ok) return;
+        S.tasks = r.data;
+        renderKanban();
+        renderList();
+        updateStatusbar();
+      }
+
+      function updateStatusbar() {
+        document.getElementById('st-total').textContent = S.tasks.length;
+        document.getElementById('st-work').textContent = S.tasks.filter(t => t.status === 'in_progress').length;
+
+        // We can also calculate daily time from S.report if we load it
+        // For now, let's just show the active timer if any
+        if (S.timerActive && S.timerStart) {
+          const sec = Math.floor((new Date() - S.timerStart) / 1000);
+          document.getElementById('st-time').textContent = pad(Math.floor(sec / 3600)) + ':' + pad(Math.floor((sec % 3600) / 60));
+        }
+      }
+      setInterval(updateStatusbar, 5000);
+
+      const STATUS_LABELS = {
+        inbox: 'Входящие', backlog: 'Очередь (Бэклог)', approved: 'Утверждено',
+        in_progress: 'В работе', review: 'Проверка', done: 'Готово', cancelled: 'Отменено',
+      };
+      const COLS = ['inbox', 'backlog', 'approved', 'in_progress', 'review'];
+
+      function renderKanban() {
+        COLS.forEach(st => {
+          const col = document.getElementById('col-' + st);
+          const cnt = document.getElementById('cnt-' + st);
+          const tasks = S.tasks.filter(t => t.status === st);
+          cnt.textContent = tasks.length;
+          col.innerHTML = tasks.map(t => `
+      <div class="k-card" data-status="${t.status}" onclick="openTask(${t.id})">
+        <div class="k-title">${esc(t.title)}</div>
+        <div class="k-meta">
+          <span class="prio">${t.priority.toFixed(1)}</span>
+          ${t.is_urgent ? '<span class="urgent">срочно</span>' : ''}
+          ${t.assigned_name ? `<span class="assigned">→ ${esc(t.assigned_name)}</span>` : ''}
+          ${t.deadline ? `<span>${t.deadline.slice(0, 10)}</span>` : ''}
+        </div>
+      </div>`).join('');
+        });
+      }
+
+      function renderList() {
+        const fStatus = document.getElementById('filter-status').value.toLowerCase();
+        const fText = document.getElementById('filter-text').value.toLowerCase();
+        const tasks = S.tasks.filter(t =>
+          (!fStatus || t.status.includes(fStatus)) &&
+          (!fText || t.title.toLowerCase().includes(fText))
+        );
+        document.getElementById('task-tbody').innerHTML = tasks.map(t => `
+    <tr onclick="openTask(${t.id})" style="cursor:pointer">
+      <td>${esc(t.title)}</td>
+      <td><span class="badge badge-${t.status}">${STATUS_LABELS[t.status] || t.status}</span></td>
+      <td class="mono">${t.priority.toFixed(2)}</td>
+      <td>${t.assigned_name ? esc(t.assigned_name) : '<span style="color:var(--muted)">—</span>'}</td>
+      <td>${t.deadline ? t.deadline.slice(0, 10) : '—'}</td>
+    </tr>`).join('');
+      }
+
+      function openCreateTask() {
+        document.getElementById('modal-title').textContent = 'Новая задача';
+        document.getElementById('m-id').value = '';
+        ['m-title', 'm-desc', 'm-source', 'm-deadline'].forEach(id => document.getElementById(id).value = '');
+        document.getElementById('m-impact').value = 3;
+        document.getElementById('m-effort').value = 3;
+        document.getElementById('m-status').value = 'inbox';
+        document.getElementById('m-urgent').checked = false;
+        document.getElementById('m-important').checked = true;
+        const today = new Date();
+        const yyyy = today.getFullYear();
+        const mm = String(today.getMonth() + 1).padStart(2, '0');
+        const dd = String(today.getDate()).padStart(2, '0');
+        document.getElementById('m-deadline').value = `${yyyy}-${mm}-${dd}`;
+        document.getElementById('m-cancel-btn').style.display = 'none';
+        document.getElementById('modal-overlay').classList.add('open');
+      }
+
+      function openTask(id) {
+        const t = S.tasks.find(x => x.id === id);
+        if (!t) return;
+        document.getElementById('modal-title').textContent = 'Задача #' + t.id;
+        document.getElementById('m-id').value = t.id;
+        document.getElementById('m-title').value = t.title;
+        document.getElementById('m-desc').value = t.description || '';
+        document.getElementById('m-source').value = t.source || '';
+        document.getElementById('m-impact').value = t.impact;
+        document.getElementById('m-effort').value = t.effort;
+        document.getElementById('m-deadline').value = t.deadline ? t.deadline.slice(0, 10) : '';
+        document.getElementById('m-status').value = t.status;
+        document.getElementById('m-urgent').checked = t.is_urgent;
+        document.getElementById('m-important').checked = t.is_important;
+        document.getElementById('m-cancel-btn').style.display =
+          ['done', 'cancelled'].includes(t.status) ? 'none' : '';
+
+        // Список исполнителей
+        const sel = document.getElementById('m-assigned');
+        sel.innerHTML = '<option value="">— не назначен —</option>' +
+          S.users.map(u => `<option value="${u.id}" ${t.assigned_to === u.id ? 'selected' : ''}>${esc(u.full_name || u.username)}</option>`).join('');
+
+        document.getElementById('modal-overlay').classList.add('open');
+      }
+
+      function closeModal() {
+        document.getElementById('modal-overlay').classList.remove('open');
+      }
+
+      async function saveTask() {
+        const id = document.getElementById('m-id').value;
+        const body = {
+          title: document.getElementById('m-title').value.trim(),
+          description: document.getElementById('m-desc').value.trim() || null,
+          source: document.getElementById('m-source').value.trim() || null,
+          impact: +document.getElementById('m-impact').value,
+          effort: +document.getElementById('m-effort').value,
+          is_urgent: document.getElementById('m-urgent').checked,
+          is_important: document.getElementById('m-important').checked,
+          deadline: document.getElementById('m-deadline').value || null,
+        };
+        if (!body.title) { toast('Введите название задачи'); return; }
+
+        let r;
+        if (id) {
+          body.status = document.getElementById('m-status').value;
+          const assignedVal = document.getElementById('m-assigned').value;
+          if (assignedVal) body.assigned_to = +assignedVal;
+          r = await api('PUT', '/tasks/' + id, body);
+        } else {
+          r = await api('POST', '/tasks', body);
+        }
+        if (r.ok) { closeModal(); loadTasks(); toast('Сохранено'); }
+        else toast(r.data.error || 'Ошибка');
+      }
+
+      async function cancelTask() {
+        const id = document.getElementById('m-id').value;
+        if (!id) return;
+        const r = await api('PUT', '/tasks/' + id, { status: 'cancelled' });
+        if (r.ok) { closeModal(); loadTasks(); toast('Задача отменена'); }
+        else toast(r.data.error || 'Ошибка');
+      }
+
+      // ── Таймер Любищева ──────────────────────────────────────────────────────────
+      async function timerToggle() {
+        if (!S.timerActive) {
+          const cat = +document.getElementById('timer-cat').value;
+          const r = await api('POST', '/time/start', { category: cat });
+          if (!r.ok) { toast(r.data.error || 'Ошибка старта'); return; }
+          S.timerLogId = r.data.log_id;
+          S.timerStart = Date.now();
+          S.timerActive = true;
+          document.getElementById('timer-btn').textContent = '■ стоп';
+          document.getElementById('timer-btn').classList.add('stop');
+          document.getElementById('timer-display').classList.add('running');
+          S.timerInterval = setInterval(updateTimerDisplay, 1000);
+        } else {
+          clearInterval(S.timerInterval);
+          const r = await api('POST', '/time/stop/' + S.timerLogId);
+          S.timerActive = false; S.timerLogId = null;
+          document.getElementById('timer-btn').textContent = '▶ старт';
+          document.getElementById('timer-btn').classList.remove('stop');
+          document.getElementById('timer-display').classList.remove('running');
+          document.getElementById('timer-display').textContent = '00:00';
+          if (r.ok) { toast('Время записано'); if (S.currentPage === 'lyubishchev') loadReport(); }
+        }
+      }
+
+      function updateTimerDisplay() {
+        const s = Math.floor((Date.now() - S.timerStart) / 1000);
+        const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+        document.getElementById('timer-display').textContent =
+          (h ? pad(h) + ':' : '') + pad(m) + ':' + pad(sec);
+      }
+
+      // ── Аналитика Любищева ───────────────────────────────────────────────────────
+      async function loadReport() {
+        const days = document.getElementById('report-days').value;
+        const r = await api('GET', `/time/report?days=${days}`);
+        if (!r.ok) return;
+        const d = r.data;
+        const fmt = s => { const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60); return `${pad(h)}:${pad(m)}`; };
+        const tot = d.total_seconds || 1;
+        document.getElementById('s-c1').textContent = fmt(d.cat1_seconds);
+        document.getElementById('s-c2').textContent = fmt(d.cat2_seconds);
+        document.getElementById('s-c3').textContent = fmt(d.cat3_seconds);
+        document.getElementById('bar-c1').style.width = (d.cat1_seconds / tot * 100).toFixed(1) + '%';
+        document.getElementById('bar-c2').style.width = (d.cat2_seconds / tot * 100).toFixed(1) + '%';
+        document.getElementById('bar-c3').style.width = (d.cat3_seconds / tot * 100).toFixed(1) + '%';
+        document.getElementById('eff-pct').textContent = d.efficiency_pct.toFixed(1) + '%';
+        document.getElementById('eff-bar').style.width = d.efficiency_pct.toFixed(1) + '%';
+        const catLabel = { 1: '① Творческая', 2: '② Вспомогат.', 3: '③ Накладные' };
+        document.getElementById('log-tbody').innerHTML = (d.entries || []).map(e => `
+    <tr>
+      <td>${e.task_title ? esc(e.task_title) : '<span style="color:var(--muted)">—</span>'}</td>
+      <td>${catLabel[e.category] || e.category}</td>
+      <td class="mono">${e.started_at.slice(0, 16)}</td>
+      <td class="mono">${e.duration_s != null ? fmt(e.duration_s) : '…'}</td>
+      <td>${e.note ? esc(e.note) : ''}</td>
+    </tr>`).join('');
+      }
+
+      // ── Чат ──────────────────────────────────────────────────────────────────────
+      function startChat() {
+        loadMessages();
+        if (!S.chatInterval) S.chatInterval = setInterval(loadMessages, 4000);
+      }
+
+      async function loadMessages() {
+        const r = await api('GET', `/chat?since=${encodeURIComponent(S.lastMsgAt)}`);
+        if (!r.ok || !r.data.length) return;
+        const box = document.getElementById('chat-messages');
+        const atBottom = box.scrollHeight - box.scrollTop < box.clientHeight + 40;
+        r.data.forEach(m => {
+          S.lastMsgAt = m.sent_at;
+          const div = document.createElement('div');
+          div.className = 'msg' + (m.user_id === S.userId ? ' mine' : '');
+          div.innerHTML = `<div class="msg-meta">${esc(m.username)} · ${m.sent_at.slice(11, 16)}</div>
+                     <div class="msg-body">${esc(m.body)}</div>`;
+          box.appendChild(div);
+        });
+        if (atBottom) box.scrollTop = box.scrollHeight;
+      }
+
+      async function sendMsg() {
+        const inp = document.getElementById('chat-input');
+        const body = inp.value.trim();
+        if (!body) return;
+        inp.value = '';
+        const r = await api('POST', '/chat', { body });
+        if (!r.ok) toast(r.data.error || 'Ошибка');
+        else loadMessages();
+      }
+
+      // ── Файлы ────────────────────────────────────────────────────────────────────
+      async function loadFiles() {
+        const r = await api('GET', '/files');
+        if (!r.ok) return;
+        document.getElementById('files-tbody').innerHTML = r.data.map(f => `
+    <tr>
+      <td><a href="/files/${f.id}" style="color:var(--accent)">${esc(f.filename)}</a></td>
+      <td>${esc(f.uploader_name)}</td>
+      <td class="mono">${(f.size_bytes / 1024).toFixed(1)} КБ</td>
+      <td>${f.uploaded_at.slice(0, 16)}</td>
+      <td><a href="/files/${f.id}" download="${esc(f.filename)}" style="color:var(--text2);font-size:11px">↓</a></td>
+    </tr>`).join('');
+      }
+
+      async function uploadFile() {
+        const file = document.getElementById('file-input').files[0];
+        if (!file) return;
+        const r = await apiUpload('/files/upload', file);
+        if (r.ok) { toast('Файл загружен'); loadFiles(); }
+        else toast(r.data.error || 'Ошибка загрузки');
+      }
+
+      // ── Цифровой пульс ──
+      async function loadPulseData() {
+        const r = await api('GET', '/monitor/metrics');
+        if (!r.ok) return;
+
+        document.getElementById('pulse-keys').textContent = r.data.metrics.keys;
+        document.getElementById('pulse-mouse').textContent = (r.data.metrics.mouse / 3780).toFixed(2); // px to meters (rough)
+        document.getElementById('pulse-window').textContent = r.data.last_activity.window;
+        document.getElementById('pulse-process').textContent = r.data.last_activity.process;
+
+        // Recent timeline from journal
+        const r2 = await api('GET', '/journal/report');
+        if (r2.ok) {
+          const list = r2.data.slice(-20).reverse();
+          document.getElementById('pulse-timeline').innerHTML = list.map(e => `
+      <div style="margin-bottom:4px;border-bottom:1px solid #222;padding-bottom:2px">
+        <span style="color:var(--text2)">${e.happened_at.slice(11, 16)}</span>
+        <span style="color:var(--accent)">${e.event_type}</span>
+        <span>${esc(e.detail)}</span>
+      </div>
+    `).join('');
+        }
+      }
+
+      // ── Пользователи (Админ) ─────────────────────────────────────────────────────
+      async function loadUsers() {
+        const r = await api('GET', '/users');
+        if (!r.ok) return;
+        S.users = r.data;
+        document.getElementById('users-tbody').innerHTML = r.data.map(u => `
+    <tr>
+      <td class="mono">${esc(u.username)}</td>
+      <td>${esc(u.full_name)}</td>
+      <td><span class="badge badge-${u.role === 'admin' ? 'in_progress' : u.role === 'expert' ? 'approved' : u.role === 'engineer' ? 'backlog' : 'inbox'}">${u.role}</span></td>
+      <td>${u.created_at.slice(0, 10)}</td>
+    </tr>`).join('');
+      }
+
+      function openCreateUser() {
+        const ov = document.getElementById('user-modal-overlay');
+        ov.style.display = 'flex';
+      }
+
+      async function createUser() {
+        const r = await api('POST', '/users', {
+          username: document.getElementById('u-username').value.trim(),
+          full_name: document.getElementById('u-fullname').value.trim(),
+          password: document.getElementById('u-password').value,
+          role: document.getElementById('u-role').value,
+        });
+        if (r.ok) { document.getElementById('user-modal-overlay').style.display = 'none'; loadUsers(); toast('Пользователь создан'); }
+        else toast(r.data.error || 'Ошибка');
+      }
+
+      async function changePass() {
+        const r = await api('PUT', '/users/password', {
+          old_password: document.getElementById('old-pass').value,
+          new_password: document.getElementById('new-pass').value,
+        });
+        if (r.ok) toast('Пароль изменён');
+        else toast(r.data.error || 'Ошибка');
+      }
+
+      // ── Утилиты ──────────────────────────────────────────────────────────────────
+      function esc(s) {
+        if (!s) return '';
+        return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      }
+      function pad(n) { return String(n).padStart(2, '0'); }
+
+      // ── Knowledge Base ──────────────────────────────────────────────────────────
+      let kbNotes = [];
+      let currentNoteId = 0;
+
+      async function loadKb() {
+        const r = await api('GET', '/kb/list');
+        if (!r.ok) return;
+        S.kbNotes = r.data;
+        renderKbTree();
+        renderKbGraph();
+      }
+
+      function kbSetMode(mode) {
+        const editArea = document.getElementById('kb-note-content');
+        const previewArea = document.getElementById('kb-note-preview');
+        const editBtn = document.getElementById('kb-btn-edit');
+        const previewBtn = document.getElementById('kb-btn-preview');
+
+        if (mode === 'preview') {
+          editArea.style.display = 'none';
+          previewArea.style.display = 'block';
+          editBtn.style.background = 'transparent';
+          previewBtn.style.background = 'var(--accent)';
+
+          const content = editArea.value;
+          previewArea.innerHTML = marked.parse(content);
+
+          // Re-render Mermaid
+          setTimeout(() => {
+            mermaid.init(undefined, ".mermaid");
+          }, 50);
+        } else {
+          editArea.style.display = 'block';
+          previewArea.style.display = 'none';
+          editBtn.style.background = 'var(--accent)';
+          previewBtn.style.background = 'transparent';
+        }
+      }
+
+      function renderKbTree() {
+        const tree = document.getElementById('kb-tree');
+        tree.innerHTML = '';
+        const roots = S.kbNotes.filter(n => !n.parent_id);
+        roots.forEach(n => tree.appendChild(createTreeItem(n, 0)));
+      }
+
+      function createTreeItem(note, depth) {
+        const div = document.createElement('div');
+        div.className = 'tree-item' + (note.id === S.currentNoteId ? ' active' : '');
+        div.style.paddingLeft = (depth * 14 + 8) + 'px';
+        div.style.paddingTop = '6px';
+        div.style.paddingBottom = '6px';
+        div.style.cursor = 'pointer';
+        div.style.borderRadius = '4px';
+        div.style.transition = 'background 0.2s';
+        div.innerHTML = `<span style="opacity:0.6;margin-right:6px">📄</span> ${esc(note.title)}`;
+        div.onclick = () => kbOpenNote(note.id);
+
+        const children = S.kbNotes.filter(n => n.parent_id === note.id);
+        if (children.length > 0) {
+          const frag = document.createDocumentFragment();
+          frag.appendChild(div);
+          children.forEach(c => frag.appendChild(createTreeItem(c, depth + 1)));
+          return frag;
+        }
+        return div;
+      }
+
+      async function kbOpenNote(id) {
+        const r = await api('GET', `/kb/get/${id}`);
+        if (!r.ok) return;
+        S.currentNoteId = id;
+        document.getElementById('kb-note-title').value = r.data.title;
+        document.getElementById('kb-note-content').value = r.data.content;
+        kbSetMode('preview'); // Open in preview mode by default
+        renderKbTree();
+        renderKbGraph();
+      }
+
+      function kbNewNote() {
+        S.currentNoteId = 0;
+        document.getElementById('kb-note-title').value = 'Новая заметка';
+        document.getElementById('kb-note-content').value = '';
+      }
+
+      async function kbSaveNote() {
+        const title = document.getElementById('kb-note-title').value;
+        const content = document.getElementById('kb-note-content').value;
+        const r = await api('POST', '/kb/save', { id: currentNoteId, user_id: 1, title, content, parent_id: null, created_at: '', updated_at: '' });
+        if (r.ok) { kbOpenNote(r.data.id || currentNoteId); loadKb(); toast('Сохранено'); }
+      }
+
+      async function kbDeleteNote() {
+        if (!currentNoteId) return;
+        if (!confirm('Удалить заметку?')) return;
+        const r = await api('POST', `/kb/delete/${currentNoteId}`);
+        if (r.ok) { kbNewNote(); loadKb(); toast('Удалено'); }
+      }
+
+      async function loadKbGraph() {
+        const r = await api('GET', '/kb/graph');
+        if (r.ok) renderKbGraph(r.data);
+      }
+
+      function renderKbGraph(data) {
+        const canvas = document.getElementById('kb-graph-canvas');
+        const ctx = canvas.getContext('2d');
+        const parent = canvas.parentElement;
+        const w = canvas.width = parent.clientWidth;
+        const h = canvas.height = parent.clientHeight;
+        ctx.clearRect(0, 0, w, h);
+
+        // Pseudo-random layout seeded by ID for stability
+        const nodes = data.nodes.map(n => ({
+          ...n,
+          x: 40 + (Math.abs(Math.sin(n.id)) * (w - 80)),
+          y: 40 + (Math.abs(Math.cos(n.id)) * (h - 80))
+        }));
+
+        ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+        ctx.lineWidth = 1;
+        data.edges.forEach(e => {
+          const f = nodes.find(n => n.id === e.from);
+          const t = nodes.find(n => n.id === e.to);
+          if (f && t) { ctx.beginPath(); ctx.moveTo(f.x, f.y); ctx.lineTo(t.x, t.y); ctx.stroke(); }
+        });
+
+        nodes.forEach(n => {
+          const active = n.id === currentNoteId;
+          ctx.fillStyle = active ? 'var(--blue)' : 'var(--text2)';
+          ctx.beginPath(); ctx.arc(n.x, n.y, active ? 5 : 3.5, 0, Math.PI * 2); ctx.fill();
+          ctx.font = active ? 'bold 11px sans-serif' : '10px sans-serif';
+          ctx.fillStyle = active ? 'var(--text1)' : 'var(--text2)';
+          ctx.fillText(n.label, n.x + 8, n.y + 3);
+        });
+      }
+
+      let toastTimer;
+      function toast(msg) {
+        const el = document.getElementById('toast');
+        el.textContent = msg;
+        el.classList.add('show');
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => el.classList.remove('show'), 2500);
+      }
+    </script>
+</body>
+
+</html>

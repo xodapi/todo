@@ -1,0 +1,449 @@
+<!--
+  ЖУРНАЛ РАБОЧЕГО ДНЯ — вставить в index.html:
+  1. Добавить кнопку в <nav>:   <button onclick="nav('journal')">Журнал</button>
+  2. Добавить страницу в #main (ниже)
+  3. Добавить 'journal' в массив PAGES
+  4. В nav() добавить: if(p==='journal') loadJournal()
+-->
+
+<!-- ═══ СТРАНИЦА ЖУРНАЛА (вставить в #main) ═══ -->
+<div id="page-journal" class="page">
+
+  <!-- Шапка с выбором даты и кнопками -->
+  <div class="flex gap8" style="align-items:center;flex-wrap:wrap">
+    <span class="muted">Журнал рабочего дня</span>
+    <input type="date" id="j-date" style="width:150px" onchange="loadJournal()">
+    <button class="bxs" onclick="jDateToday()">Сегодня</button>
+    <button class="bxs" onclick="jDatePrev()">← День</button>
+    <button class="bxs" onclick="jDateNext()">День →</button>
+    <div class="mla flex gap8">
+      <button class="btn bg" onclick="loadJournal()">↺</button>
+      <button class="btn bp" onclick="copyReport()">📋 Копировать отчёт</button>
+    </div>
+  </div>
+
+  <!-- Быстрая статистика дня -->
+  <div id="j-daystats" style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px">
+    <div class="scard">
+      <div class="slabel">Начало дня</div>
+      <div class="sval" id="js-start" style="font-size:18px">—</div>
+    </div>
+    <div class="scard">
+      <div class="slabel">Конец дня</div>
+      <div class="sval" id="js-end" style="font-size:18px">—</div>
+    </div>
+    <div class="scard">
+      <div class="slabel">Всего учтено</div>
+      <div class="sval mono" id="js-total" style="font-size:18px">—</div>
+    </div>
+    <div class="scard">
+      <div class="slabel">КПД</div>
+      <div class="sval" id="js-eff" style="font-size:18px;color:var(--ok)">—</div>
+      <div class="sbar">
+        <div class="bc1" id="js-effbar" style="width:0%"></div>
+      </div>
+    </div>
+    <div class="scard">
+      <div class="slabel">Задач затронуто</div>
+      <div class="sval" id="js-tasks" style="font-size:18px">—</div>
+    </div>
+  </div>
+
+  <!-- Основной блок: Timeline + Задачи -->
+  <div style="display:grid;grid-template-columns:1fr 340px;gap:10px;min-height:0">
+
+    <!-- Левая колонка: визуальная таймлайн + хронология -->
+    <div style="display:flex;flex-direction:column;gap:10px">
+
+      <!-- Визуальная полоса дня (00:00–23:59 → 960px = 16ч рабочих) -->
+      <div class="panel">
+        <div class="ph">Визуальная шкала дня</div>
+        <div class="pb" style="overflow-x:auto">
+          <div id="j-timebar"
+            style="position:relative;height:48px;background:var(--bg);border-radius:3px;min-width:600px">
+            <!-- Метки часов -->
+            <div id="j-hour-marks"></div>
+            <!-- Сегменты активности -->
+            <div id="j-segments"></div>
+          </div>
+          <!-- Легенда -->
+          <div style="display:flex;gap:16px;margin-top:8px;font-size:10px;color:var(--text2)">
+            <span><span
+                style="display:inline-block;width:10px;height:10px;background:var(--ok);border-radius:2px;margin-right:4px"></span>①
+              Творческая</span>
+            <span><span
+                style="display:inline-block;width:10px;height:10px;background:var(--accent);border-radius:2px;margin-right:4px"></span>②
+              Вспомогательная</span>
+            <span><span
+                style="display:inline-block;width:10px;height:10px;background:var(--muted);border-radius:2px;margin-right:4px"></span>③
+              Накладные</span>
+            <span><span
+                style="display:inline-block;width:10px;height:10px;background:#6b7aad;border-radius:2px;margin-right:4px"></span>Событие</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Хронология событий -->
+      <div class="panel" style="flex:1">
+        <div class="ph">Хронология <span id="j-evcount" style="margin-left:auto;color:var(--text2)"></span></div>
+        <div id="j-timeline" style="padding:8px 0;max-height:420px;overflow-y:auto"></div>
+      </div>
+    </div>
+
+    <!-- Правая колонка: задачи дня + текст отчёта -->
+    <div style="display:flex;flex-direction:column;gap:10px">
+
+      <!-- Задачи дня -->
+      <div class="panel">
+        <div class="ph">Задачи дня</div>
+        <div id="j-tasks" style="padding:6px 0;max-height:260px;overflow-y:auto"></div>
+      </div>
+
+      <!-- Недельная сводка -->
+      <div class="panel">
+        <div class="ph">Неделя <button class="bxs" onclick="loadWeek()" style="margin-left:auto">↺</button></div>
+        <div id="j-week" style="padding:6px 0"></div>
+      </div>
+
+      <!-- Текст отчёта (скрытый — копируется в буфер) -->
+      <textarea id="j-report-text" style="display:none"></textarea>
+    </div>
+  </div>
+
+</div>
+<!-- ═══ КОНЕЦ СТРАНИЦЫ ЖУРНАЛА ═══ -->
+
+
+<style>
+  /* Дополнительные стили для журнала */
+  .j-event {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 6px 14px;
+    border-bottom: 1px solid var(--border);
+    transition: background .1s;
+    cursor: default
+  }
+
+  .j-event:hover {
+    background: #141414
+  }
+
+  .j-event.timer_start .j-dot {
+    background: var(--ok)
+  }
+
+  .j-event.timer_stop .j-dot {
+    background: var(--ok);
+    opacity: .5
+  }
+
+  .j-event.status_change .j-dot {
+    background: #6b7aad
+  }
+
+  .j-event.comment .j-dot {
+    background: var(--accent)
+  }
+
+  .j-event.file_upload .j-dot {
+    background: #c8a227
+  }
+
+  .j-event.login .j-dot {
+    background: var(--muted)
+  }
+
+  .j-event.task_created .j-dot {
+    background: var(--ok)
+  }
+
+  .j-event.reflection .j-dot {
+    background: var(--accent);
+    border-radius: 2px
+  }
+
+  .j-time {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text2);
+    min-width: 42px;
+    padding-top: 2px
+  }
+
+  .j-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--muted);
+    flex-shrink: 0;
+    margin-top: 5px
+  }
+
+  .j-detail {
+    font-size: 12px;
+    line-height: 1.5
+  }
+
+  .j-task-item {
+    padding: 7px 14px;
+    border-bottom: 1px solid var(--border)
+  }
+
+  .j-task-title {
+    font-size: 12px;
+    margin-bottom: 2px
+  }
+
+  .j-task-time {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--accent)
+  }
+
+  .j-task-actions {
+    font-size: 10px;
+    color: var(--text2);
+    margin-top: 2px
+  }
+
+  .week-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 12px;
+    border-bottom: 1px solid var(--border);
+    font-size: 11px
+  }
+
+  .week-date {
+    color: var(--text2);
+    min-width: 70px
+  }
+
+  .week-bar-wrap {
+    flex: 1;
+    background: var(--border);
+    border-radius: 2px;
+    height: 6px
+  }
+
+  .week-bar {
+    height: 100%;
+    border-radius: 2px;
+    background: var(--accent);
+    transition: width .3s
+  }
+
+  .week-time {
+    font-family: var(--mono);
+    min-width: 50px;
+    text-align: right;
+    color: var(--text)
+  }
+</style>
+
+
+<script>
+  // ════════════════════════════════════════════════════════
+  //  ЖУРНАЛ
+  // ════════════════════════════════════════════════════════
+  let _jReport = ''; // текст для копирования
+
+  function jDateToday() {
+    document.getElementById('j-date').value = todayStr();
+    loadJournal();
+  }
+  function jDatePrev() {
+    const d = new Date(document.getElementById('j-date').value || todayStr());
+    d.setDate(d.getDate() - 1);
+    document.getElementById('j-date').value = dateStr(d);
+    loadJournal();
+  }
+  function jDateNext() {
+    const d = new Date(document.getElementById('j-date').value || todayStr());
+    d.setDate(d.getDate() + 1);
+    document.getElementById('j-date').value = dateStr(d);
+    loadJournal();
+  }
+  function todayStr() { return dateStr(new Date()); }
+  function dateStr(d) { return d.toISOString().slice(0, 10); }
+
+  async function loadJournal() {
+    const date = document.getElementById('j-date').value || todayStr();
+    const r = await api('GET', `/journal/report?date=${date}`);
+    if (!r.ok) { toast('Нет данных за этот день'); return; }
+    renderJournal(r.data);
+    loadWeek();
+  }
+
+  function renderJournal(d) {
+    _jReport = d.report_text || '';
+    document.getElementById('j-report-text').value = _jReport;
+
+    // Быстрые статы
+    document.getElementById('js-start').textContent = d.work_start || '—';
+    document.getElementById('js-end').textContent = d.work_end || '—';
+    document.getElementById('js-total').textContent = fmtS(d.total_tracked_s);
+    document.getElementById('js-eff').textContent = d.efficiency_pct.toFixed(1) + '%';
+    document.getElementById('js-effbar').style.width = d.efficiency_pct + '%';
+    document.getElementById('js-tasks').textContent = d.tasks_touched.length;
+
+    // Хронология
+    document.getElementById('j-evcount').textContent = d.timeline.length + ' событий';
+    document.getElementById('j-timeline').innerHTML = d.timeline.map(e => `
+    <div class="j-event ${e.event_type}">
+      <span class="j-time">${e.happened_at.slice(11, 16)}</span>
+      <span class="j-dot"></span>
+      <span class="j-detail">${esc(e.detail)}</span>
+    </div>`).join('');
+
+    // Визуальная шкала
+    renderTimebar(d.timeline);
+
+    // Задачи дня
+    document.getElementById('j-tasks').innerHTML = d.tasks_touched.length
+      ? d.tasks_touched.map(t => `
+        <div class="j-task-item">
+          <div class="j-task-title">${esc(t.task_title)}</div>
+          <div class="j-task-time">${fmtS(t.time_spent_s)}</div>
+          <div class="j-task-actions">${t.actions.slice(0, 3).map(a => esc(a)).join('<br>')}</div>
+        </div>`).join('')
+      : '<div style="padding:12px 14px;color:var(--text2);font-size:12px">Нет задач за этот день</div>';
+  }
+
+  // ── Визуальная шкала времени ─────────────────────────────────────────────────
+  function renderTimebar(entries) {
+    const bar = document.getElementById('j-segments');
+    const marks = document.getElementById('j-hour-marks');
+    const BAR_W = 960; // ширина в px = 16 часов (7:00–23:00)
+    const DAY_START = 7;  // 07:00
+    const DAY_HOURS = 16; // до 23:00
+
+    bar.innerHTML = ''; marks.innerHTML = '';
+
+    // Метки часов
+    for (let h = DAY_START; h <= DAY_START + DAY_HOURS; h += 2) {
+      const pct = (h - DAY_START) / DAY_HOURS * 100;
+      const mk = document.createElement('div');
+      mk.style.cssText = `position:absolute;left:${pct}%;top:0;height:100%;
+      border-left:1px solid var(--border);font-size:9px;color:var(--text2);
+      padding-left:2px;pointer-events:none;line-height:1`;
+      mk.textContent = pad(h) + ':00';
+      marks.appendChild(mk);
+    }
+
+    // Парные старт/стоп → сегменты
+    const starts = {};
+    const COLORS = { 1: 'var(--ok)', 2: 'var(--accent)', 3: 'var(--muted)' };
+
+    entries.forEach(e => {
+      if (e.event_type === 'timer_start') {
+        starts[e.task_id || 0] = { time: e.happened_at, cat: e.category };
+      }
+      if (e.event_type === 'timer_stop') {
+        const key = e.task_id || 0;
+        const st = starts[key];
+        if (!st) return;
+        const startMin = timeToMin(e.happened_at) - timeToMin(st.time);
+        const startPos = (timeToMin(st.time) - DAY_START * 60) / (DAY_HOURS * 60) * 100;
+        const widthPct = startMin / (DAY_HOURS * 60) * 100;
+        if (startPos < 0 || startPos > 100) return;
+
+        const seg = document.createElement('div');
+        seg.title = `${e.task_title || 'без задачи'}: ${fmtS(e.duration_s || 0)}`;
+        seg.style.cssText = `
+        position:absolute;
+        left:${Math.max(0, startPos).toFixed(2)}%;
+        width:${Math.max(0.3, Math.min(widthPct, 100 - startPos)).toFixed(2)}%;
+        top:8px; height:32px;
+        background:${COLORS[st.cat] || 'var(--muted)'};
+        border-radius:2px; opacity:.8;
+        cursor:pointer; transition:opacity .1s;`;
+        seg.onmouseenter = () => { seg.style.opacity = '1'; };
+        seg.onmouseleave = () => { seg.style.opacity = '.8'; };
+        bar.appendChild(seg);
+        delete starts[key];
+      }
+
+      // Точки одиночных событий
+      if (['status_change', 'comment', 'task_created', 'login'].includes(e.event_type)) {
+        const pos = (timeToMin(e.happened_at) - DAY_START * 60) / (DAY_HOURS * 60) * 100;
+        if (pos < 0 || pos > 100) return;
+        const dot = document.createElement('div');
+        dot.title = e.detail;
+        dot.style.cssText = `
+        position:absolute;left:${pos.toFixed(2)}%;
+        top:18px;width:6px;height:6px;border-radius:50%;
+        background:#6b7aad;transform:translateX(-50%);cursor:pointer;`;
+        bar.appendChild(dot);
+      }
+    });
+  }
+
+  function timeToMin(dt) {
+    // "2026-03-07 09:15:32" → минуты от полуночи
+    const t = dt.slice(11, 16).split(':');
+    return parseInt(t[0]) * 60 + parseInt(t[1]);
+  }
+
+  // ── Копировать отчёт ──────────────────────────────────────────────────────────
+  async function copyReport() {
+    if (!_jReport) { toast('Сначала загрузите журнал'); return; }
+    try {
+      await navigator.clipboard.writeText(_jReport);
+      toast('Отчёт скопирован в буфер обмена');
+    } catch {
+      // Fallback для HTTP без HTTPS
+      const ta = document.getElementById('j-report-text');
+      ta.style.display = '';
+      ta.select();
+      document.execCommand('copy');
+      ta.style.display = 'none';
+      toast('Отчёт скопирован');
+    }
+  }
+
+  // ── Недельная сводка ──────────────────────────────────────────────────────────
+  async function loadWeek() {
+    const r = await api('GET', '/journal/week');
+    if (!r.ok) return;
+    const d = r.data;
+    const maxDay = Math.max(...d.days.map(x => x.tracked_s), 1);
+
+    document.getElementById('j-week').innerHTML =
+      d.days.map(day => `
+      <div class="week-row">
+        <span class="week-date">${day.date.slice(5)}</span>
+        <div class="week-bar-wrap">
+          <div class="week-bar" style="width:${(day.tracked_s / maxDay * 100).toFixed(1)}%"></div>
+        </div>
+        <span class="week-time">${fmtS(day.tracked_s)}</span>
+      </div>`).join('') +
+      (d.top_tasks.length ? `
+      <div style="padding:8px 12px 4px;font-size:10px;color:var(--text2);
+                  text-transform:uppercase;letter-spacing:1px;margin-top:4px">
+        Топ задач за неделю
+      </div>
+      ${d.top_tasks.map(([title, secs]) => `
+        <div style="padding:4px 12px;font-size:11px;display:flex;gap:8px">
+          <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(title)}</span>
+          <span class="mono" style="color:var(--accent)">${fmtS(secs)}</span>
+        </div>`).join('')}
+    ` : '');
+  }
+
+  // ── Утилиты ──────────────────────────────────────────────────────────────────
+  function fmtS(s) {
+    if (!s) return '—';
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+    return h > 0 ? `${h}ч ${pad(m)}м` : `${pad(m)}м`;
+  }
+
+  // Инициализация — ставим сегодняшнюю дату
+  document.addEventListener('DOMContentLoaded', () => {
+    const jd = document.getElementById('j-date');
+    if (jd) jd.value = todayStr();
+  });
+</script>

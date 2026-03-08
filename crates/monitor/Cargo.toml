@@ -1,0 +1,12 @@
+[package]
+name = "monitor"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tokio.workspace = true
+windows-sys.workspace = true
+protocol = { path = "../protocol" }
+event_bus = { path = "../event_bus" }
+tracing.workspace = true
+chrono.workspace = true
