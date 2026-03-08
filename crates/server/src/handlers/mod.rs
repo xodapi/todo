@@ -236,13 +236,26 @@ pub fn handle_kb_save(req: &mut tiny_http::Request, db: &Arc<Mutex<Connection>>)
 
     let conn = db.lock().unwrap();
     if note.id == 0 {
-        match db::create_note(&conn, 1, note.parent_id, &note.title, &note.content) {
-            Ok(id) => json_resp(200, &format!("{{\"id\":{}}}", id)),
+        match db::create_note(&conn, 1, note.parent_id, &note.title, &note.content, &note.aliases) {
+            Ok(id) => {
+                // Handle tags
+                for tag in &note.tags {
+                    db::add_tag(&conn, id, tag).ok();
+                }
+                json_resp(200, &format!("{{\"id\":{}}}", id))
+            },
             Err(e) => json_resp(500, &ApiError::json(&e.to_string())),
         }
     } else {
-        match db::update_note(&conn, note.id, &note.title, &note.content, note.parent_id) {
-            Ok(_) => json_resp(200, r#"{"success":true}"#),
+        match db::update_note(&conn, note.id, &note.title, &note.content, note.parent_id, &note.aliases, note.is_archived) {
+            Ok(_) => {
+                // Update tags: remove old and add new (simplistic)
+                conn.execute("DELETE FROM note_tags WHERE note_id=?1", params![note.id]).ok();
+                for tag in &note.tags {
+                    db::add_tag(&conn, note.id, tag).ok();
+                }
+                json_resp(200, r#"{"success":true}"#)
+            },
             Err(e) => json_resp(500, &ApiError::json(&e.to_string())),
         }
     }

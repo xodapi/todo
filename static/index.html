@@ -906,7 +906,10 @@
         <div class="card" style="display:flex;flex-direction:column">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:15px">
             <h3 style="margin:0">Древо</h3>
-            <button class="btn-xs" onclick="kbNewNote()">+</button>
+            <div style="display:flex;gap:5px">
+              <button class="btn-xs" onclick="toggleArchive()" id="kb-toggle-archive" title="Показать архив">📦</button>
+              <button class="btn-xs" onclick="kbNewNote()">+</button>
+            </div>
           </div>
           <div id="kb-tree" style="flex:1;overflow-y:auto;font-size:13px"></div>
         </div>
@@ -914,7 +917,14 @@
         <!-- Editor -->
         <div class="card" style="display:flex;flex-direction:column">
           <input id="kb-note-title" type="text" placeholder="Заголовок..."
-            style="font-size:20px;margin-bottom:10px;background:transparent;border:none;border-bottom:1px solid var(--border);color:var(--text1)">
+            style="font-size:20px;margin-bottom:5px;background:transparent;border:none;border-bottom:1px solid var(--border);color:var(--text1)">
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+            <input id="kb-note-aliases" type="text" placeholder="Алиасы (через запятую)..."
+              style="font-size:12px;background:var(--bg2);border:1px solid var(--border);border-radius:4px;padding:4px 8px;color:var(--text2)">
+            <input id="kb-note-tag-input" type="text" placeholder="Теги (через запятую)..."
+              style="font-size:12px;background:var(--bg2);border:1px solid var(--border);border-radius:4px;padding:4px 8px;color:var(--text2)">
+          </div>
 
           <div style="flex:1;display:flex;flex-direction:column;min-height:0">
             <div style="display:flex;gap:10px;margin-bottom:10px">
@@ -931,8 +941,11 @@
               style="display:none;flex:1;background:var(--bg);border-radius:4px;border:1px solid var(--border)"></div>
           </div>
 
-          <div style="margin-top:10px;display:flex;justify-content:space-between">
-            <button class="btn-sm" onclick="kbSaveNote()">Сохранить</button>
+          <div style="margin-top:10px;display:flex;justify-content:space-between;align-items:center">
+            <div style="display:flex;gap:10px">
+              <button class="btn-sm" onclick="kbSaveNote()">Сохранить</button>
+              <button class="btn-sm" id="kb-btn-archive" onclick="kbToggleNoteArchive()"></button>
+            </div>
             <button class="btn-sm btn-ghost" onclick="kbDeleteNote()" style="color:var(--red)">Удалить</button>
           </div>
         </div>
@@ -1261,11 +1274,36 @@
     <script>
       // ── Состояние ────────────────────────────────────────────────────────────────
       const S = {
-        token: null, role: null, userId: null, username: null,
-        tasks: [], users: [], messages: [], files: [],
-        timerActive: false, timerLogId: null, timerStart: null, timerInterval: null,
-        chatInterval: null, lastMsgAt: '1970-01-01 00:00:00',
+        token: '', role: '', userId: 0, username: '',
         currentPage: 'kanban',
+        tasks: [], users: [],
+        kbNotes: [], currentNoteId: 0, currentParentId: null, currentNoteArchived: false, showArchived: false,
+        timerActive: false, timerStart: null,
+      };
+
+      function checkSession() {
+        const sess = localStorage.getItem('todo_session');
+        if (sess) {
+          try {
+            const data = JSON.parse(sess);
+            if (new Date().getTime() < data.expires) {
+              S.token = data.token; S.role = data.role;
+              S.userId = data.userId; S.username = data.username;
+              document.getElementById('login-screen').style.display = 'none';
+              document.getElementById('role-badge').textContent = S.role;
+              if (S.role === 'admin') document.getElementById('admin-btn').style.display = '';
+              return true;
+            }
+          } catch (e) { localStorage.removeItem('todo_session'); }
+        }
+        return false;
+      }
+
+      window.onload = () => {
+        if (!checkSession()) {
+          document.getElementById('login-screen').style.display = 'flex';
+        }
+        nav('kanban');
       };
 
       // ── API ──────────────────────────────────────────────────────────────────────
@@ -1316,6 +1354,12 @@
         if (r.ok) {
           S.token = r.data.token; S.role = r.data.role;
           S.userId = r.data.user_id; S.username = r.data.username;
+          // Persist session
+          localStorage.setItem('todo_session', JSON.stringify({
+            token: S.token, role: S.role, userId: S.userId, username: S.username,
+            expires: new Date().getTime() + (5 * 24 * 60 * 60 * 1000)
+          }));
+
           document.getElementById('login-screen').style.display = 'none';
           document.getElementById('role-badge').textContent = S.role;
           if (S.role === 'admin') document.getElementById('admin-btn').style.display = '';
@@ -1326,10 +1370,28 @@
           document.getElementById('login-error').textContent = r.data.error || 'Ошибка входа';
         }
       }
+
+      function checkSession() {
+        const sess = localStorage.getItem('todo_session');
+        if (sess) {
+          const data = JSON.parse(sess);
+          if (new Date().getTime() < data.expires) {
+            S.token = data.token; S.role = data.role;
+            S.userId = data.userId; S.username = data.username;
+            document.getElementById('login-screen').style.display = 'none';
+            document.getElementById('role-badge').textContent = S.role;
+            if (S.role === 'admin') document.getElementById('admin-btn').style.display = '';
+            loadTasks();
+            return true;
+          }
+        }
+        return false;
+      }
       document.getElementById('l-pass').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
 
       async function doLogout() {
         await api('POST', '/auth/logout');
+        localStorage.removeItem('todo_session');
         location.reload();
       }
 
@@ -1705,7 +1767,7 @@
       function renderKbTree() {
         const tree = document.getElementById('kb-tree');
         tree.innerHTML = '';
-        const roots = S.kbNotes.filter(n => !n.parent_id);
+        const roots = S.kbNotes.filter(n => !n.parent_id && (S.showArchived || !n.is_archived));
         roots.forEach(n => tree.appendChild(createTreeItem(n, 0)));
       }
 
@@ -1713,15 +1775,35 @@
         const div = document.createElement('div');
         div.className = 'tree-item' + (note.id === S.currentNoteId ? ' active' : '');
         div.style.paddingLeft = (depth * 14 + 8) + 'px';
-        div.style.paddingTop = '6px';
-        div.style.paddingBottom = '6px';
+        div.style.paddingTop = '4px';
+        div.style.paddingBottom = '4px';
         div.style.cursor = 'pointer';
         div.style.borderRadius = '4px';
+        div.style.display = 'flex';
+        div.style.alignItems = 'center';
         div.style.transition = 'background 0.2s';
-        div.innerHTML = `<span style="opacity:0.6;margin-right:6px">📄</span> ${esc(note.title)}`;
-        div.onclick = () => kbOpenNote(note.id);
 
-        const children = S.kbNotes.filter(n => n.parent_id === note.id);
+        const titleSpan = document.createElement('span');
+        titleSpan.style.flex = '1';
+        titleSpan.innerHTML = `<span style="opacity:0.6;margin-right:6px">📄</span> ${esc(note.title)}`;
+        titleSpan.onclick = () => kbOpenNote(note.id);
+
+        const addBtn = document.createElement('button');
+        addBtn.className = 'btn-xs';
+        addBtn.style.padding = '0 4px';
+        addBtn.style.opacity = '0';
+        addBtn.style.marginLeft = '4px';
+        addBtn.textContent = '+';
+        addBtn.title = 'Добавить подзаметку';
+        addBtn.onclick = (e) => { e.stopPropagation(); kbNewNote(note.id); };
+
+        div.appendChild(titleSpan);
+        div.appendChild(addBtn);
+
+        div.onmouseover = () => addBtn.style.opacity = '1';
+        div.onmouseout = () => addBtn.style.opacity = '0';
+
+        const children = S.kbNotes.filter(n => n.parent_id === note.id && (S.showArchived || !n.is_archived));
         if (children.length > 0) {
           const frag = document.createDocumentFragment();
           frag.appendChild(div);
@@ -1732,33 +1814,78 @@
       }
 
       async function kbOpenNote(id) {
-        const r = await api('GET', `/kb/get/${id}`);
-        if (!r.ok) return;
-        S.currentNoteId = id;
-        document.getElementById('kb-note-title').value = r.data.title;
-        document.getElementById('kb-note-content').value = r.data.content;
-        kbSetMode('preview'); // Open in preview mode by default
-        renderKbTree();
-        renderKbGraph();
+        const r = await api('GET', '/kb/get/' + id);
+        if (r.ok) {
+          S.currentNoteId = id;
+          S.currentParentId = r.data.parent_id;
+          document.getElementById('kb-note-title').value = r.data.title;
+          document.getElementById('kb-note-content').value = r.data.content;
+          document.getElementById('kb-note-aliases').value = r.data.aliases || '';
+          document.getElementById('kb-note-tag-input').value = (r.data.tags || []).join(', ');
+
+          const archBtn = document.getElementById('kb-btn-archive');
+          if (archBtn) archBtn.textContent = r.data.is_archived ? 'Разархивировать' : 'В архив';
+          S.currentNoteArchived = r.data.is_archived;
+
+          kbSetMode('preview');
+        }
       }
 
-      function kbNewNote() {
+      function kbNewNote(parentId = null) {
         S.currentNoteId = 0;
+        S.currentParentId = parentId;
         document.getElementById('kb-note-title').value = 'Новая заметка';
         document.getElementById('kb-note-content').value = '';
+        kbSetMode('edit');
+        if (parentId) toast('Создание подзаметки...');
       }
 
       async function kbSaveNote() {
         const title = document.getElementById('kb-note-title').value;
         const content = document.getElementById('kb-note-content').value;
-        const r = await api('POST', '/kb/save', { id: currentNoteId, user_id: 1, title, content, parent_id: null, created_at: '', updated_at: '' });
-        if (r.ok) { kbOpenNote(r.data.id || currentNoteId); loadKb(); toast('Сохранено'); }
+        const aliases = document.getElementById('kb-note-aliases').value;
+        const tags = document.getElementById('kb-note-tag-input').value
+          .split(',')
+          .map(t => t.trim())
+          .filter(t => t.length > 0);
+
+        const r = await api('POST', '/kb/save', {
+          id: S.currentNoteId,
+          user_id: S.userId,
+          title,
+          content,
+          aliases,
+          tags,
+          is_archived: S.currentNoteArchived || false,
+          parent_id: S.currentParentId || null,
+          created_at: '',
+          updated_at: ''
+        });
+        if (r.ok) {
+          S.currentParentId = null;
+          kbOpenNote(r.data.id || S.currentNoteId);
+          loadKb();
+          toast('Сохранено');
+        }
+      }
+
+      async function kbToggleNoteArchive() {
+        if (!S.currentNoteId) return;
+        S.currentNoteArchived = !S.currentNoteArchived;
+        await kbSaveNote();
+      }
+
+      function toggleArchive() {
+        S.showArchived = !S.showArchived;
+        const btn = document.getElementById('kb-toggle-archive');
+        btn.style.background = S.showArchived ? 'var(--blue)' : '';
+        renderKbTree();
       }
 
       async function kbDeleteNote() {
-        if (!currentNoteId) return;
+        if (!S.currentNoteId) return;
         if (!confirm('Удалить заметку?')) return;
-        const r = await api('POST', `/kb/delete/${currentNoteId}`);
+        const r = await api('POST', `/kb/delete/${S.currentNoteId}`);
         if (r.ok) { kbNewNote(); loadKb(); toast('Удалено'); }
       }
 

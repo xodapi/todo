@@ -3,6 +3,7 @@ use rusqlite::{Connection, OptionalExtension, Result, params};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::Path;
+use std::str::FromStr;
 
 pub fn open<P: AsRef<Path>>(path: P) -> Result<Connection> {
     let conn = Connection::open(path)?;
@@ -81,6 +82,8 @@ fn migrate(conn: &Connection) -> Result<()> {
             parent_id   INTEGER,
             title       TEXT NOT NULL,
             content     TEXT NOT NULL,
+            aliases     TEXT DEFAULT '',
+            is_archived INTEGER DEFAULT 0,
             created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (user_id) REFERENCES users(id),
@@ -169,7 +172,7 @@ pub fn find_user_by_credentials(
         Ok(Some(User {
             id: row.get(0)?,
             username: row.get(1)?,
-            role: Role::from_str(&row.get::<usize, String>(2)?),
+            role: Role::from_str(&row.get::<usize, String>(2)?).unwrap_or(Role::Viewer),
             full_name: row.get(3)?,
             created_at: row.get(4)?,
         }))
@@ -198,7 +201,7 @@ pub fn list_users(conn: &Connection) -> Result<Vec<User>> {
         Ok(User {
             id: row.get(0)?,
             username: row.get(1)?,
-            role: Role::from_str(&row.get::<usize, String>(2)?),
+            role: Role::from_str(&row.get::<usize, String>(2)?).unwrap_or(Role::Viewer),
             full_name: row.get(3)?,
             created_at: row.get(4)?,
         })
@@ -348,7 +351,7 @@ pub fn get_user_by_id(conn: &Connection, id: i64) -> Result<Option<User>> {
         Ok(Some(User {
             id: row.get(0)?,
             username: row.get(1)?,
-            role: Role::from_str(&row.get::<usize, String>(2)?),
+            role: Role::from_str(&row.get::<usize, String>(2)?).unwrap_or(Role::Viewer),
             full_name: row.get(3)?,
             created_at: row.get(4)?,
         }))
@@ -532,10 +535,11 @@ pub fn create_note(
     parent_id: Option<i64>,
     title: &str,
     content: &str,
+    aliases: &str,
 ) -> rusqlite::Result<i64> {
     conn.execute(
-        "INSERT INTO knowledge_notes (user_id, parent_id, title, content) VALUES (?1, ?2, ?3, ?4)",
-        params![user_id, parent_id, title, ""], // Store empty content in DB
+        "INSERT INTO knowledge_notes (user_id, parent_id, title, content, aliases, is_archived) VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+        params![user_id, parent_id, title, "", aliases],
     )?;
     let id = conn.last_insert_rowid();
     save_note_to_file(id, content).ok();
@@ -548,10 +552,12 @@ pub fn update_note(
     title: &str,
     content: &str,
     parent_id: Option<i64>,
+    aliases: &str,
+    is_archived: bool,
 ) -> rusqlite::Result<()> {
     conn.execute(
-        "UPDATE knowledge_notes SET title=?1, content=?2, parent_id=?3, updated_at=CURRENT_TIMESTAMP WHERE id=?4",
-        params![title, "", parent_id, id], // Ensure DB content is empty
+        "UPDATE knowledge_notes SET title=?1, content=?2, parent_id=?3, aliases=?4, is_archived=?5, updated_at=CURRENT_TIMESTAMP WHERE id=?6",
+        params![title, "", parent_id, aliases, is_archived as i32, id],
     )?;
     save_note_to_file(id, content).ok();
     Ok(())
@@ -590,7 +596,7 @@ pub fn delete_note(conn: &Connection, id: i64) -> rusqlite::Result<()> {
 
 pub fn get_note(conn: &Connection, id: i64) -> rusqlite::Result<KnowledgeNote> {
     conn.query_row(
-        "SELECT id, user_id, parent_id, title, content, created_at, updated_at FROM knowledge_notes WHERE id=?1",
+        "SELECT id, user_id, parent_id, title, content, created_at, updated_at, aliases, is_archived FROM knowledge_notes WHERE id=?1",
         params![id],
         |r| {
             let id: i64 = r.get(0)?;
@@ -598,12 +604,16 @@ pub fn get_note(conn: &Connection, id: i64) -> rusqlite::Result<KnowledgeNote> {
             if content.is_empty() {
                 content = read_note_from_file(id);
             }
+            let tags = get_note_tags(conn, id).unwrap_or_default();
             Ok(KnowledgeNote {
                 id,
                 user_id: r.get(1)?,
                 parent_id: r.get(2)?,
                 title: r.get(3)?,
                 content,
+                aliases: r.get(7)?,
+                is_archived: r.get::<_, i32>(8)? != 0,
+                tags,
                 created_at: r.get(5)?,
                 updated_at: r.get(6)?,
             })
@@ -612,24 +622,34 @@ pub fn get_note(conn: &Connection, id: i64) -> rusqlite::Result<KnowledgeNote> {
 }
 
 pub fn list_notes(conn: &Connection, user_id: i64) -> rusqlite::Result<Vec<KnowledgeNote>> {
-    let mut stmt = conn.prepare("SELECT id, user_id, parent_id, title, content, created_at, updated_at FROM knowledge_notes WHERE user_id=?1")?;
+    let mut stmt = conn.prepare("SELECT id, user_id, parent_id, title, content, created_at, updated_at, aliases, is_archived FROM knowledge_notes WHERE user_id=?1")?;
     let rows = stmt.query_map(params![user_id], |r| {
         let id: i64 = r.get(0)?;
         let mut content: String = r.get(4)?;
         if content.is_empty() {
             content = read_note_from_file(id);
         }
+        let tags = get_note_tags(conn, id).unwrap_or_default();
         Ok(KnowledgeNote {
             id,
             user_id: r.get(1)?,
             parent_id: r.get(2)?,
             title: r.get(3)?,
             content,
+            aliases: r.get(7)?,
+            is_archived: r.get::<_, i32>(8)? != 0,
+            tags,
             created_at: r.get(5)?,
             updated_at: r.get(6)?,
         })
     })?;
     rows.collect()
+}
+
+pub fn get_note_tags(conn: &Connection, note_id: i64) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT t.name FROM knowledge_tags t JOIN note_tags nt ON t.id = nt.tag_id WHERE nt.note_id = ?1")?;
+    let tags = stmt.query_map(params![note_id], |r| r.get(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
+    Ok(tags)
 }
 
 pub fn add_link(conn: &Connection, source: i64, target: i64) -> rusqlite::Result<()> {

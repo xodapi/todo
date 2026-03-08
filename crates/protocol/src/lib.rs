@@ -22,17 +22,22 @@ impl Role {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
-        match s {
-            "admin" => Self::Admin,
-            "expert" => Self::Expert,
-            "engineer" => Self::Engineer,
-            _ => Self::Viewer,
-        }
-    }
-
     pub fn can_approve(&self) -> bool {
         matches!(self, Self::Admin | Self::Expert)
+    }
+}
+
+impl std::str::FromStr for Role {
+    type Err = ();
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "admin" => Ok(Self::Admin),
+            "expert" => Ok(Self::Expert),
+            "engineer" => Ok(Self::Engineer),
+            "manager" => Ok(Self::Manager),
+            "analyst" => Ok(Self::Analyst),
+            _ => Ok(Self::Viewer),
+        }
     }
 }
 
@@ -199,6 +204,9 @@ pub struct KnowledgeNote {
     pub parent_id: Option<i64>,
     pub title: String,
     pub content: String,
+    pub aliases: String,
+    pub tags: Vec<String>,
+    pub is_archived: bool,
     pub created_at: String,
     pub updated_at: String,
 }
