@@ -5,4 +5,5 @@ edition.workspace = true
 
 [dependencies]
 tokio.workspace = true
+serde.workspace = true
 protocol = { path = "../protocol" }

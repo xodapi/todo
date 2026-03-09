@@ -15,8 +15,11 @@
   - Full **Markdown** support with interactive **Mermaid** diagrams.
   - Zettelkasten implementation with bidirectional links and a **Visual Graph**.
   - Hierarchical note organization and archiving support.
-- **🛡️ Activity Monitoring & Privacy**
+- **🛡️ Activity Monitoring & Security**
   - Granular window and process tracking on Windows.
+  - **Real-time Synchronization**: Powered by **WebSockets** for instant UI updates.
+  - **CSRF Protection**: Hardened API security with token validation.
+  - **Session Persistence**: Optional 5-day session ("Remember me").
   - **Privacy Mode**: One-click toggle between "Work" and "Home" modes to protect sensitive activity.
   - **Daily Reflection**: Automated end-of-day prompts for professional self-reflection.
 - **✅ Task Management**
@@ -24,11 +27,11 @@
   - Integrated time logging and reporting.
 - **📦 Architecture**
   - **Workspace-based**: Modular design with separate crates for `server`, `database`, `protocol`, and `monitor`.
-  - **Event-Driven**: Internal event bus for real-time synchronization.
+  - **WebSockets / Event-Driven**: Real-time event broadcasting to all connected clients.
   - **Offline-First**: Local hosting with bundled assets for complete data sovereignty.
 
 ### 🛠️ Tech Stack
-- **Backend:** Rust 2024, Tokio, Axum (customized tiny_http), SQLite (rusqlite).
+- **Backend:** Rust 2024, Tokio, Axum (Real-time WebSockets), SQLite (rusqlite).
 - **Frontend:** Vanilla JS, HTML5, CSS3 (Modern Glassmorphism UI).
 - **Libraries:** Marked.js, Mermaid.js, Tracing, Serde.
 
@@ -53,20 +56,23 @@
   - Поддержка **Markdown** с интерактивными диаграммами **Mermaid**.
   - Реализация Zettelkasten с двусторонними ссылками и **визуальным графом**.
   - Иерархическая организация заметок и поддержка архивации.
-- **🛡️ Мониторинг и Приватность**
+- **🛡️ Мониторинг и Безопасность**
   - Детальное отслеживание окон и процессов в Windows.
-  - **Режим Приватности**: Переключение одним кликом между режимами «Работа» и «Дом» для защиты данных.
+  - **Синхронизация в реальном времени**: Использование **WebSockets** для мгновенных обновлений.
+  - **Защита CSRF**: Усиленная безопасность API с проверкой токенов.
+  - **Стойкие сессии**: Опциональный вход на 5 дней («Запомнить меня»).
+  - **Режим Приватности**: Переключение одним кликом между режимами «Работа» и «Дом».
   - **Ежедневная Рефлексия**: Автоматические опросы в конце дня для анализа продуктивности.
 - **✅ Управление Задачами**
   - Гибкое отслеживание статусов (Inbox, Backlog, In Progress, Done).
   - Встроенный учет времени и генерация отчетов.
 - **📦 Архитектура**
-  - **Workspace**: Модульный дизайн с разделением на `server`, `database`, `protocol` и `monitor`.
-  - **Event-Driven**: Внутренняя шина событий для синхронизации в реальном времени.
-  - **Offline-First**: Локальный сервер с автономными ресурсами для полной безопасности данных.
+  - **Workspace**: Модульный дизайн (`server`, `database`, `protocol`, `monitor`).
+  - **WebSockets / Event-Driven**: Вещание событий всем подключенным клиентам в real-time.
+  - **Offline-First**: Локальный сервер с автономными ресурсами.
 
 ### 🛠️ Стек технологий
-- **Backend:** Rust 2024, Tokio, Axum (на базе tiny_http), SQLite.
+- **Backend:** Rust 2024, Tokio, Axum (WebSockets), SQLite.
 - **Frontend:** Vanilla JS, HTML5, CSS3 (современный стекляный интерфейс).
 - **Библиотеки:** Marked.js, Mermaid.js, Tracing, Serde.
 

@@ -840,6 +840,10 @@
           autocomplete="username"></div>
       <div class="field"><label>Пароль</label><input id="l-pass" type="password" placeholder="••••••••"
           autocomplete="current-password"></div>
+      <div class="field" style="display:flex;align-items:center;gap:8px;margin-bottom:16px;cursor:pointer">
+        <input id="l-remember" type="checkbox" style="width:auto">
+        <label for="l-remember" style="margin:0;cursor:pointer">Запомнить меня на 5 дней</label>
+      </div>
       <button class="btn btn-primary" style="width:100%" onclick="doLogin()">Войти</button>
       <div id="login-error"></div>
     </div>
@@ -863,7 +867,8 @@
       <span id="timer-display">00:00</span>
       <button class="btn-xs" id="timer-btn" onclick="timerToggle()" title="Запуск учета рабочего времени">▶ Таймер
         (старт)</button>
-      <select id="timer-cat" style="width:130px;padding:2px 6px;font-size:11px">
+      <select id="timer-cat" style="width:130px;padding:2px 6px;font-size:11px"
+        title="Выберите категорию деятельности для учета времени (Хронометраж Любищева)">
         <option value="1">① Творческая</option>
         <option value="2">② Вспомогат.</option>
         <option value="3">③ Накладные</option>
@@ -954,8 +959,12 @@
         <div style="display:flex;flex-direction:column;gap:20px">
           <div class="card" style="flex:1;display:flex;flex-direction:column">
             <h3 style="margin:0 0 10px 0">Граф связей</h3>
-            <div id="kb-graph" style="flex:1;background:var(--bg);border-radius:8px;position:relative;overflow:hidden">
+            <div id="kb-graph" style="flex:1;background:var(--bg);border-radius:8px;position:relative;overflow:hidden"
+              title="Граф показывает связи между заметками. Нажмите на узел для перехода.">
               <canvas id="kb-graph-canvas"></canvas>
+            </div>
+            <div style="font-size:10px;color:var(--text2);margin-top:4px">
+              💡 Граф визуализирует связи и алиасы. Синие узлы — активная заметка.
             </div>
           </div>
           <div class="card" style="height:150px">
@@ -1085,13 +1094,22 @@
     </div>
 
     <!-- Чат -->
-    <!-- ... existing chat ... -->
+    <div id="page-chat" class="page">
+      <div id="chat-messages"></div>
+      <div class="chat-input-area">
+        <input type="text" id="chat-input" placeholder="Введите сообщение..."
+          onkeydown="if(event.key==='Enter')sendMsg()">
+        <button class="btn btn-primary" onclick="sendMsg()">Отправить</button>
+      </div>
+    </div>
 
     <!-- Цифровой пульс -->
     <div id="page-pulse" class="page">
       <div class="flex gap8" style="align-items:center">
         <span style="font-size:11px;color:var(--text2)">Цифровой пульс (Мониторинг активности)</span>
-        <div class="ml-auto">
+        <div class="ml-auto flex gap8">
+          <button class="btn btn-danger" onclick="stopMonitoring()">Остановить мониторинг</button>
+          <button class="btn btn-ghost" onclick="clearMetrics()">Очистить статистику</button>
           <button class="btn btn-ghost" onclick="loadPulseData()">↺ обновить</button>
         </div>
       </div>
@@ -1149,7 +1167,9 @@
     <div id="page-admin" class="page">
       <div class="flex gap8" style="align-items:center">
         <span style="font-size:11px;color:var(--text2)">Управление пользователями</span>
-        <div class="ml-auto">
+        <div class="ml-auto flex gap8">
+          <button class="btn btn-danger" onclick="shutdownServer()"
+            style="background:#440000;border-color:#660000">ВЫКЛЮЧИТЬ СЕРВЕР</button>
           <button class="btn btn-primary" onclick="openCreateUser()">+ пользователь</button>
         </div>
       </div>
@@ -1302,16 +1322,97 @@
       window.onload = () => {
         if (!checkSession()) {
           document.getElementById('login-screen').style.display = 'flex';
+        } else {
+          initWebSocket();
         }
         nav('kanban');
       };
+
+      // ── WebSockets ──────────────────────────────────────────────────────────────
+      function initWebSocket() {
+        if (S.ws && S.ws.readyState === WebSocket.OPEN) return;
+        if (!S.token) return;
+
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${window.location.host}/ws`;
+        S.ws = new WebSocket(wsUrl);
+
+        S.ws.onopen = () => {
+          console.log('WS Connected');
+          document.querySelectorAll('.ws-status').forEach(el => el.style.color = 'var(--ok)');
+        };
+
+        S.ws.onclose = () => {
+          console.log('WS Closed');
+          document.querySelectorAll('.ws-status').forEach(el => el.style.color = 'var(--warn)');
+          setTimeout(initWebSocket, 3000);
+        };
+
+        S.ws.onmessage = (e) => {
+          const event = JSON.parse(e.data);
+          handleServerEvent(event);
+        };
+      }
+
+      function handleServerEvent(ev) {
+        if (ev.WindowsActivityRecorded) {
+          const a = ev.WindowsActivityRecorded;
+          document.getElementById('pulse-window').textContent = a.window_title;
+          document.getElementById('pulse-process').textContent = a.process_name;
+          addTimelineEvent('Activity', `${a.process_name}: ${a.window_title}`, a.started_at);
+        } else if (ev.InputMetricsRecorded) {
+          const m = ev.InputMetricsRecorded;
+          document.getElementById('pulse-keys').textContent = m.key_count;
+          document.getElementById('pulse-mouse').textContent = (m.mouse_distance_px / 3780).toFixed(2);
+        } else if (ev.ChatMessageSent) {
+          const m = ev.ChatMessageSent;
+          addChatMessage(m);
+          addTimelineEvent('Chat', `${m.username}: ${m.detail}`, m.happened_at);
+        }
+      }
+
+      function addTimelineEvent(type, detail, time) {
+        const box = document.getElementById('pulse-timeline');
+        if (!box) return;
+        const div = document.createElement('div');
+        div.style = "margin-bottom:4px;border-bottom:1px solid #222;padding-bottom:2px";
+        div.innerHTML = `
+          <span style="color:var(--text2)">${time.slice(11, 16)}</span>
+          <span style="color:var(--accent)">${type}</span>
+          <span>${esc(detail)}</span>
+        `;
+        box.insertBefore(div, box.firstChild);
+        if (box.children.length > 30) box.lastChild.remove();
+      }
+
+      function addChatMessage(m) {
+        const box = document.getElementById('chat-messages');
+        if (!box) return;
+        const atBottom = box.scrollHeight - box.scrollTop < box.clientHeight + 40;
+        const div = document.createElement('div');
+        div.className = 'msg' + (m.user_id === S.userId ? ' mine' : '');
+        div.innerHTML = `<div class="msg-meta">${esc(m.username)} · ${m.happened_at.slice(11, 16)}</div>
+                         <div class="msg-body">${esc(m.detail)}</div>`;
+        box.appendChild(div);
+        if (atBottom) box.scrollTop = box.scrollHeight;
+        S.lastMsgAt = m.happened_at;
+      }
 
       // ── API ──────────────────────────────────────────────────────────────────────
       async function api(method, path, body) {
         const opts = { method, headers: { 'Content-Type': 'application/json' } };
         if (S.token) opts.headers['Authorization'] = 'Bearer ' + S.token;
+        if (S.csrfToken) opts.headers['X-CSRF-Token'] = S.csrfToken;
         if (body) opts.body = JSON.stringify(body);
         const r = await fetch(path, opts);
+
+        // Grab CSRF token from header if present
+        const csrf = r.headers.get('X-CSRF-Token');
+        if (csrf) {
+          S.csrfToken = csrf;
+          localStorage.setItem('todo_csrf', csrf);
+        }
+
         const json = await r.json().catch(() => ({}));
         return { ok: r.ok, status: r.status, data: json };
       }
@@ -1337,27 +1438,31 @@
         const idx = labels.indexOf(page);
         if (idx >= 0) btns[idx].classList.add('active');
 
-        if (page === 'kanban' || page === 'list') loadTasks();
-        if (page === 'pulse') loadPulseData();
-        if (page === 'kb') loadKb();
-        if (page === 'chat') startChat();
-        if (page === 'files') loadFiles();
-        if (page === 'admin') loadUsers();
+        if (page === 'kanban' || page === 'list') { loadTasks(); }
+        else if (page === 'kb') { loadKb(); }
+        else if (page === 'chat') { loadMessages(); }
+        else if (page === 'files') { loadFiles(); }
+        else if (page === 'admin') { loadUsers(); }
+
+        initWebSocket();
       }
 
       // ── Логин / Логаут ───────────────────────────────────────────────────────────
       async function doLogin() {
+        const remember = document.getElementById('l-remember').checked;
         const r = await api('POST', '/auth/login', {
           username: document.getElementById('l-user').value,
           password: document.getElementById('l-pass').value,
+          remember_me: remember,
         });
         if (r.ok) {
           S.token = r.data.token; S.role = r.data.role;
           S.userId = r.data.user_id; S.username = r.data.username;
           // Persist session
+          const duration = remember ? (5 * 24 * 60 * 60 * 1000) : (24 * 60 * 60 * 1000);
           localStorage.setItem('todo_session', JSON.stringify({
             token: S.token, role: S.role, userId: S.userId, username: S.username,
-            expires: new Date().getTime() + (5 * 24 * 60 * 60 * 1000)
+            expires: new Date().getTime() + duration
           }));
 
           document.getElementById('login-screen').style.display = 'none';
@@ -1365,6 +1470,7 @@
           if (S.role === 'admin') document.getElementById('admin-btn').style.display = '';
           if (S.role === 'admin' || S.role === 'expert')
             document.getElementById('m-assign-row').style.display = '';
+          initWebSocket();
           loadTasks(); loadUsers();
         } else {
           document.getElementById('login-error').textContent = r.data.error || 'Ошибка входа';
@@ -1378,6 +1484,7 @@
           if (new Date().getTime() < data.expires) {
             S.token = data.token; S.role = data.role;
             S.userId = data.userId; S.username = data.username;
+            S.csrfToken = localStorage.getItem('todo_csrf');
             document.getElementById('login-screen').style.display = 'none';
             document.getElementById('role-badge').textContent = S.role;
             if (S.role === 'admin') document.getElementById('admin-btn').style.display = '';
@@ -1602,25 +1709,19 @@
       }
 
       // ── Чат ──────────────────────────────────────────────────────────────────────
-      function startChat() {
-        loadMessages();
-        if (!S.chatInterval) S.chatInterval = setInterval(loadMessages, 4000);
-      }
-
       async function loadMessages() {
         const r = await api('GET', `/chat?since=${encodeURIComponent(S.lastMsgAt)}`);
         if (!r.ok || !r.data.length) return;
         const box = document.getElementById('chat-messages');
-        const atBottom = box.scrollHeight - box.scrollTop < box.clientHeight + 40;
+        box.innerHTML = '';
         r.data.forEach(m => {
-          S.lastMsgAt = m.sent_at;
-          const div = document.createElement('div');
-          div.className = 'msg' + (m.user_id === S.userId ? ' mine' : '');
-          div.innerHTML = `<div class="msg-meta">${esc(m.username)} · ${m.sent_at.slice(11, 16)}</div>
-                     <div class="msg-body">${esc(m.body)}</div>`;
-          box.appendChild(div);
+          addChatMessage({
+            user_id: m.user_id,
+            username: m.username,
+            detail: m.body,
+            happened_at: m.sent_at
+          });
         });
-        if (atBottom) box.scrollTop = box.scrollHeight;
       }
 
       async function sendMsg() {
@@ -1661,21 +1762,62 @@
         if (!r.ok) return;
 
         document.getElementById('pulse-keys').textContent = r.data.metrics.keys;
-        document.getElementById('pulse-mouse').textContent = (r.data.metrics.mouse / 3780).toFixed(2); // px to meters (rough)
+        document.getElementById('pulse-mouse').textContent = (r.data.metrics.mouse / 3780).toFixed(2);
         document.getElementById('pulse-window').textContent = r.data.last_activity.window;
         document.getElementById('pulse-process').textContent = r.data.last_activity.process;
 
-        // Recent timeline from journal
         const r2 = await api('GET', '/journal/report');
         if (r2.ok) {
-          const list = r2.data.slice(-20).reverse();
-          document.getElementById('pulse-timeline').innerHTML = list.map(e => `
-      <div style="margin-bottom:4px;border-bottom:1px solid #222;padding-bottom:2px">
-        <span style="color:var(--text2)">${e.happened_at.slice(11, 16)}</span>
-        <span style="color:var(--accent)">${e.event_type}</span>
-        <span>${esc(e.detail)}</span>
-      </div>
-    `).join('');
+          const list = Array.isArray(r2.data) ? r2.data.slice(0, 20) : [];
+          const box = document.getElementById('pulse-timeline');
+          box.innerHTML = '';
+          list.forEach(e => {
+            const div = document.createElement('div');
+            div.style = "margin-bottom:4px;border-bottom:1px solid #222;padding-bottom:2px";
+            div.innerHTML = `
+              <span style="color:var(--text2)">${e.happened_at.slice(11, 16)}</span>
+              <span style="color:var(--accent)">${e.event_type}</span>
+              <span>${esc(e.detail)}</span>
+            `;
+            box.appendChild(div);
+          });
+        }
+      }
+
+      async function stopMonitoring() {
+        if (!confirm('Остановить процесс мониторинга на сервере?')) return;
+        const r = await api('POST', '/monitor/stop');
+        if (r.ok) { toast('Мониторинг остановлен (нажмите "обновить" для проверки)'); }
+      }
+
+      async function clearMetrics() {
+        if (!confirm('Удалить всю накопленную статистику активности?')) return;
+        const r = await api('POST', '/monitor/clear');
+        if (r.ok) { toast('Данные очищены'); loadPulseData(); }
+      }
+
+      async function togglePrivacy() {
+        const icon = document.getElementById('privacy-icon');
+        const text = document.getElementById('privacy-text');
+        const isPrivate = text.textContent === 'Private';
+        const newState = !isPrivate;
+
+        const r = await api('POST', '/auth/privacy', { enabled: newState });
+        if (r.ok) {
+          text.textContent = newState ? 'Private' : 'Work';
+          icon.textContent = newState ? '🔒' : '🔓';
+          toast(newState ? 'Режим приватности ВКЛ' : 'Режим работы ВКЛ');
+        } else {
+          toast('Ошибка переключения режима');
+        }
+      }
+
+      async function shutdownServer() {
+        if (!confirm('ВЫКЛЮЧИТЬ СЕРВЕР? Это действие прервет работу всех пользователей.')) return;
+        const r = await api('POST', '/admin/shutdown');
+        if (r.ok) {
+          toast('Сервер выключается... Страница перестанет работать.');
+          setTimeout(() => document.body.innerHTML = '<h1 style="color:white;text-align:center;margin-top:20%">СЕРВЕР ОСТАНОВЛЕН</h1>', 1500);
         }
       }
 

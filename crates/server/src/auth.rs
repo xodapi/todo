@@ -1,23 +1,43 @@
+use argon2::{
+    Argon2,
+    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
+};
 use chrono::Local;
 use database as db;
 use protocol::*;
+use password_hash::rand_core::OsRng;
 use rusqlite::{Connection, params};
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-/// SHA-256 хэш пароля. Без соли — для MVP в закрытом контуре достаточно.
+/// Argon2id хэш пароля.
 pub fn hash_password(password: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(password.as_bytes());
-    hex::encode(hasher.finalize())
+    let salt = SaltString::generate(&mut OsRng);
+    let argon2 = Argon2::default();
+    argon2
+        .hash_password(password.as_bytes(), &salt)
+        .expect("Failed to hash password")
+        .to_string()
+}
+
+/// Проверка Argon2id хэша.
+pub fn verify_password(password: &str, hash: &str) -> bool {
+    if let Ok(parsed_hash) = PasswordHash::new(hash) {
+        Argon2::default()
+            .verify_password(password.as_bytes(), &parsed_hash)
+            .is_ok()
+    } else {
+        // Fallback for old SHA-256 for migration or just fail
+        false
+    }
 }
 
 /// Создать сессию (токен) для пользователя
-pub fn create_session(conn: &Connection, user_id: i64, ip: &str) -> rusqlite::Result<String> {
+pub fn create_session(conn: &Connection, user_id: i64, ip: &str, remember_me: bool) -> rusqlite::Result<String> {
     let token = Uuid::new_v4().to_string();
+    let hours = if remember_me { 120 } else { 24 };
     let expires = Local::now()
-        .checked_add_signed(chrono::Duration::hours(120)) // 5 days
-        .unwrap()
+        .checked_add_signed(chrono::Duration::hours(hours))
+        .expect("Time addition must succeed")
         .format("%Y-%m-%d %H:%M:%S")
         .to_string();
 
@@ -61,8 +81,8 @@ pub fn extract_token(req: &tiny_http::Request) -> Option<String> {
         .find(|h| h.field.as_str().to_string().to_lowercase() == "authorization")
         .map(|h| {
             let val = h.value.as_str();
-            if val.starts_with("Bearer ") {
-                val[7..].to_string()
+            if let Some(stripped) = val.strip_prefix("Bearer ") {
+                stripped.to_string()
             } else {
                 val.to_string() // fallback if no Bearer prefix
             }
@@ -97,32 +117,13 @@ pub fn require_user(
         _ => Err(json_401("Session expired")),
     }
 }
-
-pub fn require_role(
-    conn: &Connection,
-    req: &tiny_http::Request,
-    min_role: &Role,
-) -> Result<User, tiny_http::Response<std::io::Cursor<Vec<u8>>>> {
-    let user = require_user(conn, req)?;
-    let ok = match min_role {
-        Role::Admin => matches!(user.role, Role::Admin),
-        Role::Expert => matches!(user.role, Role::Admin | Role::Expert),
-        Role::Manager => matches!(user.role, Role::Admin | Role::Manager),
-        Role::Engineer => !matches!(user.role, Role::Viewer),
-        Role::Analyst | Role::Viewer => true,
-    };
-    if ok {
-        Ok(user)
-    } else {
-        Err(json_403("Forbidden"))
-    }
-}
-
 fn json_response(code: u16, body: &str) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
     let data = body.as_bytes().to_vec();
     tiny_http::Response::new(
         tiny_http::StatusCode(code),
-        vec![tiny_http::Header::from_bytes("Content-Type", "application/json").unwrap()],
+        vec![
+            tiny_http::Header::from_bytes("Content-Type", "application/json").unwrap(),
+        ],
         std::io::Cursor::new(data.clone()),
         Some(data.len()),
         None,
@@ -130,9 +131,19 @@ fn json_response(code: u16, body: &str) -> tiny_http::Response<std::io::Cursor<V
 }
 
 pub fn json_401(msg: &str) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
-    json_response(401, &ApiError::json(msg))
+    json_response(401, &format!(r#"{{"error":"{}"}}"#, msg))
 }
 
 pub fn json_403(msg: &str) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
-    json_response(403, &ApiError::json(msg))
+    json_response(403, &format!(r#"{{"error":"{}"}}"#, msg))
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct Session {
+    pub id: i64,
+    pub user_id: i64,
+    pub token: String,
+    pub ip_address: String,
+    pub created_at: String,
+    pub expires_at: String,
 }

@@ -41,6 +41,7 @@ pub fn record(
     Ok(())
 }
 
+#[expect(dead_code, reason = "Used by upcoming API")]
 pub fn on_login(conn: &Connection, user_id: i64, ip: &str) -> rusqlite::Result<()> {
     record(
         conn,
@@ -71,6 +72,7 @@ pub fn on_timer_start(
     )
 }
 
+#[expect(dead_code, reason = "Used by upcoming API")]
 pub fn on_timer_stop(
     conn: &Connection,
     user_id: i64,

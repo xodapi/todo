@@ -1,546 +1,298 @@
-pub mod utils;
-use crate::Resp;
+use axum::{
+    extract::{Path, State},
+    response::IntoResponse,
+    Json,
+    http::StatusCode,
+};
+use crate::AppState;
 use crate::auth;
-use crate::db;
-use crate::json_resp;
-use monitor::ActivityMonitor;
+use crate::pulse;
+use database as db;
 use protocol::*;
-use rusqlite::{Connection, params};
-use std::sync::{Arc, Mutex};
-use utils::*;
+use std::sync::Arc;
+use rusqlite::params;
+use event_bus::AppEvent;
+use tracing::info;
 
-pub fn handle_login(req: &mut tiny_http::Request, db: &Arc<Mutex<Connection>>) -> Resp {
-    let mut body = String::new();
-    req.as_reader().read_to_string(&mut body).ok();
-    let login_req: LoginRequest = match serde_json::from_str(&body) {
-        Ok(r) => r,
-        Err(_) => return json_resp(400, &ApiError::json("Invalid JSON")),
+pub async fn handle_login(
+    State(state): State<Arc<AppState>>,
+    Json(login): Json<LoginRequest>,
+) -> impl IntoResponse {
+    let conn = state.db.lock().unwrap();
+    let mut stmt = match conn.prepare("SELECT id, username, pass_hash, role, full_name, created_at FROM users WHERE username = ?1") {
+        Ok(s) => s,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError::new("Database error"))).into_response(),
     };
+    let mut rows = stmt.query(params![login.username]).unwrap();
+    
+    if let Some(row) = rows.next().unwrap() {
+        let pass_hash: String = row.get(2).unwrap();
+        if auth::verify_password(&login.password, &pass_hash) {
+            let user_id: i64 = row.get(0).unwrap();
+            let token = auth::create_session(&conn, user_id, "127.0.0.1", login.remember_me.unwrap_or(false)).unwrap();
+            let csrf_token = uuid::Uuid::new_v4().to_string();
+            
+            let mut response = (StatusCode::OK, Json(LoginResponse {
+                token,
+                role: row.get::<usize, String>(3).unwrap(),
+                username: row.get(1).unwrap(),
+                user_id,
+            })).into_response();
 
-    let conn = db.lock().unwrap();
-    let hash = auth::hash_password(&login_req.password);
-    match db::find_user_by_credentials(&conn, &login_req.username, &hash) {
-        Ok(Some(user)) => {
-            let ip = req.remote_addr().map(|a| a.to_string()).unwrap_or_default();
-            let token = auth::create_session(&conn, user.id, &ip).unwrap_or_default();
-            json_resp(
-                200,
-                &serde_json::to_string(&LoginResponse {
-                    token,
-                    role: user.role.as_str().to_string(),
-                    username: user.username,
-                    user_id: user.id,
-                })
-                .unwrap(),
-            )
+            response.headers_mut().insert(
+                axum::http::header::SET_COOKIE,
+                axum::http::HeaderValue::from_str(&format!("csrf_token={}; Path=/; HttpOnly; SameSite=Lax", csrf_token)).unwrap()
+            );
+            // Also send it in a header so the frontend can easily grab it and store it if needed
+            response.headers_mut().insert(
+                "X-CSRF-Token",
+                axum::http::HeaderValue::from_str(&csrf_token).unwrap()
+            );
+
+            return response;
         }
-        _ => json_resp(401, &ApiError::json("Invalid credentials")),
+    }
+    
+    (StatusCode::UNAUTHORIZED, Json(ApiError::new("Invalid credentials"))).into_response()
+}
+
+pub async fn handle_toggle_privacy(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let current = state.monitor.is_privacy_enabled();
+    state.monitor.set_privacy(!current);
+    Json(serde_json::json!({"success": true, "private": !current}))
+}
+
+pub async fn handle_monitor_metrics(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let metrics = state.monitor.get_metrics();
+    Json(metrics)
+}
+
+pub async fn handle_clear_metrics(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    state.monitor.clear_counters();
+    let conn = state.db.lock().unwrap();
+    conn.execute("DELETE FROM input_metrics WHERE user_id = 1", []).ok();
+    conn.execute("DELETE FROM windows_activity WHERE user_id = 1", []).ok();
+    Json(serde_json::json!({"success": true}))
+}
+
+pub async fn handle_shutdown(
+    State(_state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    info!("Shutdown requested");
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        std::process::exit(0);
+    });
+    Json(serde_json::json!({"success": true}))
+}
+
+pub async fn handle_journal_report(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let conn = state.db.lock().unwrap();
+    let entries = db::get_journal_entries(&conn, 1).unwrap_or_default();
+    Json(entries)
+}
+
+pub async fn handle_stop_monitoring(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    state.monitor.stop();
+    Json(serde_json::json!({"success": true}))
+}
+
+pub async fn handle_list_tasks(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let conn = state.db.lock().unwrap();
+    let tasks = db::list_tasks(&conn, None, None).unwrap_or_default();
+    Json(tasks)
+}
+
+pub async fn handle_create_task(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<CreateTaskRequest>,
+) -> impl IntoResponse {
+    let conn = state.db.lock().unwrap();
+    match db::create_task(&conn, &req, 1) {
+        Ok(id) => (StatusCode::CREATED, Json(serde_json::json!({"id": id}))).into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError::new("Failed to create task"))).into_response(),
     }
 }
 
-pub fn handle_list_tasks(req: &tiny_http::Request, db: &Arc<Mutex<Connection>>) -> Resp {
-    let conn = db.lock().unwrap();
-    let _user = match auth::require_user(&conn, req) {
-        Ok(u) => u,
-        Err(r) => return r,
-    };
-    let params = query_params(req.url());
-    let status = params.get("status").map(|s| s.as_str());
-
-    match db::list_tasks(&conn, status, None) {
-        Ok(tasks) => json_resp(200, &serde_json::to_string(&tasks).unwrap()),
-        Err(e) => json_resp(500, &ApiError::json(&e.to_string())),
+pub async fn handle_update_task(
+    Path(id): Path<i64>,
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<UpdateTaskRequest>,
+) -> impl IntoResponse {
+    let conn = state.db.lock().unwrap();
+    match db::update_task(&conn, id, &req, 1, &Role::Admin) {
+        Ok(_) => Json(serde_json::json!({"success": true})).into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError::new("Failed to update task"))).into_response(),
     }
 }
 
-pub fn handle_create_task(req: &mut tiny_http::Request, db: &Arc<Mutex<Connection>>) -> Resp {
-    let mut body_str = String::new();
-    req.as_reader().read_to_string(&mut body_str).ok();
-    let create_req: CreateTaskRequest = match serde_json::from_str(&body_str) {
-        Ok(r) => r,
-        Err(_) => return json_resp(400, &ApiError::json("Invalid JSON")),
-    };
-
-    let conn = db.lock().unwrap();
-    let user = match auth::require_user(&conn, req) {
-        Ok(u) => u,
-        Err(r) => return r,
-    };
-
-    match db::create_task(&conn, &create_req, user.id) {
-        Ok(id) => json_resp(201, &serde_json::json!({ "id": id }).to_string()),
-        Err(e) => json_resp(500, &ApiError::json(&e.to_string())),
-    }
+pub async fn handle_pulse_pending(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let conn = state.db.lock().unwrap();
+    let pending = pulse::get_pending(&conn, 1).unwrap_or(None);
+    Json(pending)
 }
 
-pub fn handle_start_timer(req: &mut tiny_http::Request, db: &Arc<Mutex<Connection>>) -> Resp {
-    let mut body_str = String::new();
-    req.as_reader().read_to_string(&mut body_str).ok();
-    let start_req: StartTimerRequest = match serde_json::from_str(&body_str) {
-        Ok(r) => r,
-        Err(_) => return json_resp(400, &ApiError::json("Invalid JSON")),
-    };
+pub async fn handle_list_users(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let conn = state.db.lock().unwrap();
+    let users = db::list_users(&conn).unwrap_or_default();
+    Json(users)
+}
+pub async fn handle_list_messages(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let conn = state.db.lock().unwrap();
+    let since = params.get("since").map(|s| s.as_str());
+    let msgs = db::list_messages(&conn, since).unwrap_or_default();
+    Json(msgs)
+}
 
-    let conn = db.lock().unwrap();
-    let user = match auth::require_user(&conn, req) {
-        Ok(u) => u,
-        Err(r) => return r,
-    };
-
-    match db::start_timer(
-        &conn,
-        user.id,
-        start_req.task_id,
-        start_req.category,
-        start_req.note.as_deref(),
-    ) {
+pub async fn handle_send_message(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SendMessageRequest>,
+) -> impl IntoResponse {
+    let conn = state.db.lock().unwrap();
+    // In a real app we'd get user_id from session/claims
+    let user_id = 1; 
+    match db::create_message(&conn, user_id, &req.body, req.task_id) {
         Ok(id) => {
-            // Also record in timeline
-            crate::timeline::on_timer_start(
-                &conn,
-                user.id,
-                start_req.task_id,
-                "Active session",
-                start_req.category,
-            )
-            .ok();
-            json_resp(201, &serde_json::json!({ "id": id }).to_string())
-        }
-        Err(e) => json_resp(500, &ApiError::json(&e.to_string())),
+            if let Ok(Some(msg)) = db::get_message(&conn, id) {
+                state.bus.publish(AppEvent::ChatMessageSent(JournalEntry {
+                    id: msg.id,
+                    user_id: msg.user_id,
+                    username: msg.username,
+                    event_type: "chat".to_string(),
+                    task_id: msg.task_id,
+                    task_title: None, // Need to fetch if needed
+                    detail: msg.body,
+                    duration_s: None,
+                    category: None,
+                    happened_at: msg.sent_at,
+                }));
+            }
+            Json(serde_json::json!({"success": true, "id": id})).into_response()
+        },
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError::new("Failed to send message"))).into_response(),
     }
-}
-
-pub fn handle_stop_timer(req: &tiny_http::Request, db: &Arc<Mutex<Connection>>, id: i64) -> Resp {
-    let conn = db.lock().unwrap();
-    let user = match auth::require_user(&conn, req) {
-        Ok(u) => u,
-        Err(r) => return r,
-    };
-
-    match db::stop_timer(&conn, id, user.id) {
-        Ok(true) => json_resp(200, &serde_json::json!({ "success": true }).to_string()),
-        _ => json_resp(404, &ApiError::json("Timer not found or already stopped")),
-    }
-}
-
-pub fn handle_journal_report(req: &tiny_http::Request, db: &Arc<Mutex<Connection>>) -> Resp {
-    let conn = db.lock().unwrap();
-    let user = match auth::require_user(&conn, req) {
-        Ok(u) => u,
-        Err(r) => return r,
-    };
-    let params = query_params(req.url());
-    let date = params
-        .get("date")
-        .cloned()
-        .unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%d").to_string());
-
-    match crate::timeline::get_day_entries(&conn, user.id, &date) {
-        Ok(entries) => json_resp(200, &serde_json::to_string(&entries).unwrap()),
-        Err(e) => json_resp(500, &ApiError::json(&e.to_string())),
-    }
-}
-
-pub fn handle_pulse_pending(req: &tiny_http::Request, db: &Arc<Mutex<Connection>>) -> Resp {
-    let conn = db.lock().unwrap();
-    let _user = match auth::require_user(&conn, req) {
-        Ok(u) => u,
-        Err(r) => return r,
-    };
-
-    match crate::pulse::get_pending(&conn, _user.id) {
-        Ok(Some(q)) => json_resp(200, &serde_json::to_string(&q).unwrap()),
-        Ok(None) => json_resp(200, "null"),
-        Err(e) => json_resp(500, &ApiError::json(&e.to_string())),
-    }
-}
-
-pub fn handle_toggle_privacy(
-    req: &mut tiny_http::Request,
-    db: &Arc<Mutex<Connection>>,
-    monitor: &ActivityMonitor,
-) -> Resp {
-    let conn = db.lock().unwrap();
-    let _user = match auth::require_user(&conn, req) {
-        Ok(u) => u,
-        Err(r) => return r,
-    };
-
-    #[derive(serde::Deserialize)]
-    struct PrivacyReq {
-        enabled: bool,
-    }
-    let mut body = String::new();
-    req.as_reader().read_to_string(&mut body).ok();
-    if let Ok(p) = serde_json::from_str::<PrivacyReq>(&body) {
-        monitor.set_privacy(p.enabled);
-        json_resp(200, r#"{"success":true}"#)
-    } else {
-        json_resp(400, &ApiError::json("Invalid JSON"))
-    }
-}
-
-pub fn handle_submit_reflection(req: &mut tiny_http::Request, db: &Arc<Mutex<Connection>>) -> Resp {
-    let mut body = String::new();
-    req.as_reader().read_to_string(&mut body).ok();
-    let r: SubmitReflectionRequest = match serde_json::from_str(&body) {
-        Ok(v) => v,
-        Err(_) => return json_resp(400, &ApiError::json("Invalid JSON")),
-    };
-
-    let conn = db.lock().unwrap();
-    db::save_reflection(&conn, 1, &r.question, &r.answer).ok();
-    crate::timeline::record(
-        &conn,
-        1,
-        "reflection",
-        None,
-        &format!("Q: {}\nA: {}", r.question, r.answer),
-        None,
-        None,
-    )
-    .ok();
-
-    json_resp(201, r#"{"success":true}"#)
 }
 
 // --- Knowledge Base Handlers ---
 
-pub fn handle_kb_list(db: &Arc<Mutex<Connection>>) -> Resp {
-    let conn = db.lock().unwrap();
-    match db::list_notes(&conn, 1) {
-        Ok(notes) => json_resp(200, &serde_json::to_string(&notes).unwrap()),
-        Err(e) => json_resp(500, &ApiError::json(&e.to_string())),
+pub async fn handle_list_kb_notes(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let conn = state.db.lock().unwrap();
+    let notes = db::list_notes(&conn, 1, false).unwrap_or_default();
+    Json(notes)
+}
+
+pub async fn handle_create_kb_note(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<KnowledgeNote>, // Reusing KnowledgeNote for simplicity or a subset if needed
+) -> impl IntoResponse {
+    let conn = state.db.lock().unwrap();
+    match db::create_note(&conn, 1, req.parent_id, &req.title, &req.content, &req.aliases) {
+        Ok(id) => (StatusCode::CREATED, Json(serde_json::json!({"id": id}))).into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError::new("Failed to create note"))).into_response(),
     }
 }
 
-pub fn handle_kb_get(path_params: &[&str], db: &Arc<Mutex<Connection>>) -> Resp {
-    let id: i64 = match path_params.first().and_then(|s| s.parse().ok()) {
-        Some(v) => v,
-        None => return json_resp(400, &ApiError::json("Missing ID")),
-    };
-    let conn = db.lock().unwrap();
+pub async fn handle_get_kb_note(
+    Path(id): Path<i64>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let conn = state.db.lock().unwrap();
     match db::get_note(&conn, id) {
-        Ok(note) => json_resp(200, &serde_json::to_string(&note).unwrap()),
-        Err(e) => json_resp(404, &ApiError::json(&e.to_string())),
+        Ok(note) => Json(note).into_response(),
+        Err(_) => (StatusCode::NOT_FOUND, Json(ApiError::new("Note not found"))).into_response(),
     }
 }
 
-pub fn handle_kb_save(req: &mut tiny_http::Request, db: &Arc<Mutex<Connection>>) -> Resp {
-    let mut body = String::new();
-    req.as_reader().read_to_string(&mut body).ok();
-    let note: KnowledgeNote = match serde_json::from_str(&body) {
-        Ok(v) => v,
-        Err(_) => return json_resp(400, &ApiError::json("Invalid JSON")),
-    };
-
-    let conn = db.lock().unwrap();
-    if note.id == 0 {
-        match db::create_note(&conn, 1, note.parent_id, &note.title, &note.content, &note.aliases) {
-            Ok(id) => {
-                // Handle tags
-                for tag in &note.tags {
-                    db::add_tag(&conn, id, tag).ok();
-                }
-                json_resp(200, &format!("{{\"id\":{}}}", id))
-            },
-            Err(e) => json_resp(500, &ApiError::json(&e.to_string())),
-        }
-    } else {
-        match db::update_note(&conn, note.id, &note.title, &note.content, note.parent_id, &note.aliases, note.is_archived) {
-            Ok(_) => {
-                // Update tags: remove old and add new (simplistic)
-                conn.execute("DELETE FROM note_tags WHERE note_id=?1", params![note.id]).ok();
-                for tag in &note.tags {
-                    db::add_tag(&conn, note.id, tag).ok();
-                }
-                json_resp(200, r#"{"success":true}"#)
-            },
-            Err(e) => json_resp(500, &ApiError::json(&e.to_string())),
-        }
+pub async fn handle_update_kb_note(
+    Path(id): Path<i64>,
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<KnowledgeNote>,
+) -> impl IntoResponse {
+    let conn = state.db.lock().unwrap();
+    match db::update_note(&conn, id, &req.title, &req.content, req.parent_id, &req.aliases, req.is_archived) {
+        Ok(_) => Json(serde_json::json!({"success": true})).into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError::new("Failed to update note"))).into_response(),
     }
 }
 
-pub fn handle_kb_delete(path_params: &[&str], db: &Arc<Mutex<Connection>>) -> Resp {
-    let id: i64 = match path_params.first().and_then(|s| s.parse().ok()) {
-        Some(v) => v,
-        None => return json_resp(400, &ApiError::json("Missing ID")),
-    };
-    let conn = db.lock().unwrap();
+pub async fn handle_delete_kb_note(
+    Path(id): Path<i64>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let conn = state.db.lock().unwrap();
     match db::delete_note(&conn, id) {
-        Ok(_) => json_resp(200, r#"{"success":true}"#),
-        Err(e) => json_resp(500, &ApiError::json(&e.to_string())),
+        Ok(_) => Json(serde_json::json!({"success": true})).into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError::new("Failed to delete note"))).into_response(),
     }
 }
 
-pub fn handle_kb_graph(db: &Arc<Mutex<Connection>>) -> Resp {
-    let conn = db.lock().unwrap();
-    match db::get_graph(&conn, 1) {
-        Ok(graph) => json_resp(200, &serde_json::to_string(&graph).unwrap()),
-        Err(e) => json_resp(500, &ApiError::json(&e.to_string())),
-    }
+pub async fn handle_kb_graph(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let conn = state.db.lock().unwrap();
+    let graph = db::get_kb_graph(&conn).unwrap_or(KbGraphData { nodes: vec![], edges: vec![] });
+    Json(graph)
 }
 
-pub fn handle_kb_link(req: &mut tiny_http::Request, db: &Arc<Mutex<Connection>>) -> Resp {
-    let mut body = String::new();
-    req.as_reader().read_to_string(&mut body).ok();
-    let link: NoteLink = match serde_json::from_str(&body) {
-        Ok(v) => v,
-        Err(_) => return json_resp(400, &ApiError::json("Invalid JSON")),
-    };
-
-    let conn = db.lock().unwrap();
-    match db::add_link(&conn, link.source_id, link.target_id) {
-        Ok(_) => json_resp(200, r#"{"success":true}"#),
-        Err(e) => json_resp(500, &ApiError::json(&e.to_string())),
-    }
+pub async fn handle_list_kb_tags(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let conn = state.db.lock().unwrap();
+    let tags = db::list_tags(&conn).unwrap_or_default();
+    Json(tags)
 }
 
-pub fn handle_monitor_metrics(req: &tiny_http::Request, db: &Arc<Mutex<Connection>>) -> Resp {
-    let conn = db.lock().unwrap();
-    let user = match auth::require_user(&conn, req) {
-        Ok(u) => u,
-        Err(r) => return r,
-    };
+// --- File Handlers ---
 
-    let metrics = conn.query_row(
-        "SELECT key_count, mouse_distance_px FROM input_metrics WHERE user_id = ?1 ORDER BY measured_at DESC LIMIT 1",
-        params![user.id],
-        |row| Ok(serde_json::json!({
-            "keys": row.get::<_, i64>(0)?,
-            "mouse": row.get::<_, i64>(1)?,
-        }))
-    ).unwrap_or(serde_json::json!({ "keys": 0, "mouse": 0 }));
-
-    let last_activity = conn.query_row(
-        "SELECT process_name, window_title FROM windows_activity WHERE user_id = ?1 ORDER BY started_at DESC LIMIT 1",
-        params![user.id],
-        |row| Ok(serde_json::json!({
-            "process": row.get::<_, String>(0)?,
-            "window": row.get::<_, String>(1)?,
-        }))
-    ).unwrap_or(serde_json::json!({ "process": "—", "window": "—" }));
-
-    json_resp(
-        200,
-        &serde_json::json!({
-            "metrics": metrics,
-            "last_activity": last_activity,
-        })
-        .to_string(),
-    )
+pub async fn handle_list_files(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let conn = state.db.lock().unwrap();
+    let files = db::list_files(&conn, None).unwrap_or_default();
+    Json(files)
 }
 
-pub fn handle_logout(req: &tiny_http::Request, db: &Arc<Mutex<Connection>>) -> Resp {
-    let conn = db.lock().unwrap();
-    if let Some(token) = auth::extract_token(req) {
-        auth::destroy_session(&conn, &token).ok();
-    }
-    json_resp(200, r#"{"success":true}"#)
-}
-
-pub fn handle_list_users(req: &tiny_http::Request, db: &Arc<Mutex<Connection>>) -> Resp {
-    let conn = db.lock().unwrap();
-    match auth::require_role(&conn, req, &Role::Admin) {
-        Ok(_) => {}
-        Err(r) => return r,
-    }
-    match db::list_users(&conn) {
-        Ok(users) => json_resp(200, &serde_json::to_string(&users).unwrap()),
-        Err(e) => json_resp(500, &ApiError::json(&e.to_string())),
-    }
-}
-
-pub fn handle_create_user(req: &mut tiny_http::Request, db: &Arc<Mutex<Connection>>) -> Resp {
-    let mut body = String::new();
-    req.as_reader().read_to_string(&mut body).ok();
-    let conn = db.lock().unwrap();
-    match auth::require_role(&conn, req, &Role::Admin) {
-        Ok(_) => {}
-        Err(r) => return r,
+pub async fn handle_upload_file(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> impl IntoResponse {
+    let filename = headers.get("X-Filename")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("unnamed");
+    
+    let stored_name = format!("{}_{}", uuid::Uuid::new_v4(), filename);
+    let path = std::path::Path::new(&state.files_dir).join(&stored_name);
+    
+    if let Err(e) = std::fs::write(&path, &body) {
+        info!("Failed to write file: {:?}", e);
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError::new("Failed to save file"))).into_response();
     }
 
-    #[derive(serde::Deserialize)]
-    struct CreateUser {
-        username: String,
-        full_name: String,
-        password: String,
-        role: String,
-    }
-    let u: CreateUser = match serde_json::from_str(&body) {
-        Ok(u) => u,
-        Err(_) => return json_resp(400, &ApiError::json("Invalid JSON")),
-    };
-
-    let hash = auth::hash_password(&u.password);
-    match db::create_user(&conn, &u.username, &hash, &u.role, &u.full_name) {
-        Ok(id) => json_resp(201, &serde_json::json!({ "id": id }).to_string()),
-        Err(e) => json_resp(500, &ApiError::json(&e.to_string())),
-    }
-}
-
-pub fn handle_change_password(req: &mut tiny_http::Request, db: &Arc<Mutex<Connection>>) -> Resp {
-    let mut body = String::new();
-    req.as_reader().read_to_string(&mut body).ok();
-    let conn = db.lock().unwrap();
-    let user = match auth::require_user(&conn, req) {
-        Ok(u) => u,
-        Err(r) => return r,
-    };
-
-    #[derive(serde::Deserialize)]
-    struct ChangePass {
-        old_password: String,
-        new_password: String,
-    }
-    let cp: ChangePass = match serde_json::from_str(&body) {
-        Ok(u) => u,
-        Err(_) => return json_resp(400, &ApiError::json("Invalid JSON")),
-    };
-
-    // Verify old pass (optional but good)
-    let old_hash = auth::hash_password(&cp.old_password);
-    if db::find_user_by_credentials(&conn, &user.username, &old_hash)
-        .unwrap_or(None)
-        .is_none()
-    {
-        return json_resp(401, &ApiError::json("Invalid old password"));
-    }
-
-    let new_hash = auth::hash_password(&cp.new_password);
-    match db::update_password(&conn, user.id, &new_hash) {
-        Ok(_) => json_resp(200, r#"{"success":true}"#),
-        Err(e) => json_resp(500, &ApiError::json(&e.to_string())),
-    }
-}
-
-pub fn handle_update_task(
-    req: &mut tiny_http::Request,
-    db: &Arc<Mutex<Connection>>,
-    id: i64,
-) -> Resp {
-    let mut body = String::new();
-    req.as_reader().read_to_string(&mut body).ok();
-    let upd: UpdateTaskRequest = match serde_json::from_str(&body) {
-        Ok(u) => u,
-        Err(_) => return json_resp(400, &ApiError::json("Invalid JSON")),
-    };
-
-    let conn = db.lock().unwrap();
-    let user = match auth::require_user(&conn, req) {
-        Ok(u) => u,
-        Err(r) => return r,
-    };
-
-    match db::update_task(&conn, id, &upd, user.id, &user.role) {
-        Ok(true) => json_resp(200, r#"{"success":true}"#),
-        _ => json_resp(404, &ApiError::json("Task not found")),
-    }
-}
-
-pub fn handle_time_report(req: &tiny_http::Request, db: &Arc<Mutex<Connection>>) -> Resp {
-    let conn = db.lock().unwrap();
-    let user = match auth::require_user(&conn, req) {
-        Ok(u) => u,
-        Err(r) => return r,
-    };
-    let params = query_params(req.url());
-    let days = params
-        .get("days")
-        .and_then(|s| s.parse::<i32>().ok())
-        .unwrap_or(7);
-
-    match db::get_time_report(&conn, user.id, days) {
-        Ok(mut report) => {
-            // Add extra fields for frontend
-            let obj = report.as_object_mut().unwrap();
-            let c1 = obj.get("1").and_then(|v| v.as_i64()).unwrap_or(0);
-            let c2 = obj.get("2").and_then(|v| v.as_i64()).unwrap_or(0);
-            let c3 = obj.get("3").and_then(|v| v.as_i64()).unwrap_or(0);
-            let total = c1 + c2 + c3;
-            let eff = if c1 + c2 > 0 {
-                (c1 as f64 / (c1 + c2) as f64) * 100.0
-            } else {
-                0.0
-            };
-
-            let final_report = serde_json::json!({
-                "cat1_seconds": c1, "cat2_seconds": c2, "cat3_seconds": c3,
-                "total_seconds": total, "efficiency_pct": eff,
-                "entries": db::get_messages(&conn, None, None).unwrap_or_default(), // Placeholder for logs
-            });
-            json_resp(200, &final_report.to_string())
-        }
-        Err(e) => json_resp(500, &ApiError::json(&e.to_string())),
-    }
-}
-
-pub fn handle_chat(req: &mut tiny_http::Request, db: &Arc<Mutex<Connection>>) -> Resp {
-    let conn = db.lock().unwrap();
-    let user = match auth::require_user(&conn, req) {
-        Ok(u) => u,
-        Err(r) => return r,
-    };
-
-    if req.method() == &tiny_http::Method::Get {
-        let params = query_params(req.url());
-        let since = params.get("since").cloned();
-        match db::get_messages(&conn, None, since.as_deref()) {
-            Ok(msgs) => json_resp(200, &serde_json::to_string(&msgs).unwrap()),
-            Err(e) => json_resp(500, &ApiError::json(&e.to_string())),
-        }
-    } else {
-        let mut body = String::new();
-        req.as_reader().read_to_string(&mut body).ok();
-        let msg: SendMessageRequest = match serde_json::from_str(&body) {
-            Ok(m) => m,
-            Err(_) => return json_resp(400, &ApiError::json("Invalid JSON")),
-        };
-        match db::send_message(&conn, user.id, msg.task_id, &msg.body) {
-            Ok(id) => json_resp(201, &serde_json::json!({ "id": id }).to_string()),
-            Err(e) => json_resp(500, &ApiError::json(&e.to_string())),
-        }
-    }
-}
-
-pub fn handle_files(
-    req: &mut tiny_http::Request,
-    db: &Arc<Mutex<Connection>>,
-    files_dir: &str,
-) -> Resp {
-    let conn = db.lock().unwrap();
-    let user = match auth::require_user(&conn, req) {
-        Ok(u) => u,
-        Err(r) => return r,
-    };
-
-    if req.method() == &tiny_http::Method::Get {
-        match db::list_files(&conn, None) {
-            Ok(files) => json_resp(200, &serde_json::to_string(&files).unwrap()),
-            Err(e) => json_resp(500, &ApiError::json(&e.to_string())),
-        }
-    } else {
-        // Upload
-        let x_filename = req
-            .headers()
-            .iter()
-            .find(|h| h.field.as_str().to_string().to_lowercase() == "x-filename")
-            .map(|h| h.value.as_str().to_string())
-            .unwrap_or_else(|| "upload.bin".to_string());
-
-        let mut data = Vec::new();
-        req.as_reader().read_to_end(&mut data).ok();
-        let size = data.len() as i64;
-        let stored_name = format!("{}_{}", chrono::Utc::now().timestamp(), x_filename);
-        let path = std::path::Path::new(files_dir).join(&stored_name);
-
-        if std::fs::write(&path, data).is_err() {
-            return json_resp(500, &ApiError::json("Failed to write file"));
-        }
-
-        match db::register_file(&conn, None, user.id, &x_filename, &stored_name, size) {
-            Ok(id) => json_resp(201, &serde_json::json!({ "id": id }).to_string()),
-            Err(e) => json_resp(500, &ApiError::json(&e.to_string())),
-        }
+    let conn = state.db.lock().unwrap();
+    match db::register_file(&conn, None, 1, filename, &stored_name, body.len() as i64) {
+        Ok(id) => (StatusCode::CREATED, Json(serde_json::json!({"id": id}))).into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError::new("Failed to register file"))).into_response(),
     }
 }

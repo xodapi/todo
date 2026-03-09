@@ -154,9 +154,8 @@ fn migrate(conn: &Connection) -> Result<()> {
             FOREIGN KEY (task_id) REFERENCES tasks(id),
             FOREIGN KEY (uploaded_by) REFERENCES users(id)
         );
-
         INSERT OR IGNORE INTO users (username, pass_hash, role, full_name)
-        VALUES ('admin', '8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918', 'admin', 'Administrator');
+        VALUES ('admin', '$argon2id$v=19$m=19456,t=2,p=1$M6Ge9us1ftwIyNsWSQHG5Q$BBOo63u6x8k+khSFOyC/PBXgvhcl7BPrZJZ/JUkN7J8', 'admin', 'Administrator');
     ")?;
     Ok(())
 }
@@ -621,34 +620,11 @@ pub fn get_note(conn: &Connection, id: i64) -> rusqlite::Result<KnowledgeNote> {
     )
 }
 
-pub fn list_notes(conn: &Connection, user_id: i64) -> rusqlite::Result<Vec<KnowledgeNote>> {
-    let mut stmt = conn.prepare("SELECT id, user_id, parent_id, title, content, created_at, updated_at, aliases, is_archived FROM knowledge_notes WHERE user_id=?1")?;
-    let rows = stmt.query_map(params![user_id], |r| {
-        let id: i64 = r.get(0)?;
-        let mut content: String = r.get(4)?;
-        if content.is_empty() {
-            content = read_note_from_file(id);
-        }
-        let tags = get_note_tags(conn, id).unwrap_or_default();
-        Ok(KnowledgeNote {
-            id,
-            user_id: r.get(1)?,
-            parent_id: r.get(2)?,
-            title: r.get(3)?,
-            content,
-            aliases: r.get(7)?,
-            is_archived: r.get::<_, i32>(8)? != 0,
-            tags,
-            created_at: r.get(5)?,
-            updated_at: r.get(6)?,
-        })
-    })?;
-    rows.collect()
-}
-
 pub fn get_note_tags(conn: &Connection, note_id: i64) -> rusqlite::Result<Vec<String>> {
     let mut stmt = conn.prepare("SELECT t.name FROM knowledge_tags t JOIN note_tags nt ON t.id = nt.tag_id WHERE nt.note_id = ?1")?;
-    let tags = stmt.query_map(params![note_id], |r| r.get(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
+    let tags = stmt
+        .query_map(params![note_id], |r| r.get(0))?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
     Ok(tags)
 }
 
@@ -733,4 +709,160 @@ pub fn record_input(conn: &Connection, user_id: i64, keys: i64, mouse_px: i64) -
         )?;
         Ok(conn.last_insert_rowid())
     }
+}
+pub fn get_journal_entries(conn: &Connection, user_id: i64) -> Result<Vec<JournalEntry>> {
+    let mut stmt = conn.prepare(
+        "SELECT j.id, j.user_id, u.username, j.event_type, j.task_id, t.title, j.detail, j.duration_s, j.created_at
+         FROM journal j
+         JOIN users u ON u.id = j.user_id
+         LEFT JOIN tasks t ON t.id = j.task_id
+         WHERE j.user_id = ?1
+         ORDER BY j.created_at DESC LIMIT 100",
+    )?;
+    let rows = stmt.query_map(params![user_id], |row| {
+        Ok(JournalEntry {
+            id: row.get(0)?,
+            user_id: row.get(1)?,
+            username: row.get(2)?,
+            event_type: row.get(3)?,
+            task_id: row.get(4)?,
+            task_title: row.get(5)?,
+            detail: row.get(6)?,
+            duration_s: row.get(7)?,
+            category: None, // Not in simple journal table yet
+            happened_at: row.get(8)?,
+        })
+    })?;
+
+    let mut entries = Vec::new();
+    for entry in rows {
+        entries.push(entry?);
+    }
+    Ok(entries)
+}
+pub fn create_message(conn: &Connection, user_id: i64, body: &str, task_id: Option<i64>) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO messages (user_id, body, task_id) VALUES (?1, ?2, ?3)",
+        params![user_id, body, task_id],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn list_messages(conn: &Connection, since: Option<&str>) -> Result<Vec<ChatMessage>> {
+    let mut query = "
+        SELECT m.id, m.user_id, u.username, m.task_id, m.body, m.sent_at
+        FROM messages m
+        JOIN users u ON u.id = m.user_id
+        WHERE 1=1
+    ".to_string();
+    
+    let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    if let Some(s) = since {
+        query.push_str(" AND m.sent_at > ?");
+        params_vec.push(Box::new(s.to_string()));
+    }
+    query.push_str(" ORDER BY m.sent_at ASC LIMIT 200");
+
+    let mut stmt = conn.prepare(&query)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(params_vec), |row| {
+        Ok(ChatMessage {
+            id: row.get(0)?,
+            user_id: row.get(1)?,
+            username: row.get(2)?,
+            task_id: row.get(3)?,
+            body: row.get(4)?,
+            sent_at: row.get(5)?,
+        })
+    })?;
+
+    let mut msgs = Vec::new();
+    for msg in rows {
+        msgs.push(msg?);
+    }
+    Ok(msgs)
+}
+
+pub fn get_message(conn: &Connection, id: i64) -> Result<Option<ChatMessage>> {
+    let mut stmt = conn.prepare("
+        SELECT m.id, m.user_id, u.username, m.task_id, m.body, m.sent_at
+        FROM messages m
+        JOIN users u ON u.id = m.user_id
+        WHERE m.id = ?1
+    ")?;
+    let mut rows = stmt.query(params![id])?;
+    if let Some(row) = rows.next()? {
+        Ok(Some(ChatMessage {
+            id: row.get(0)?,
+            user_id: row.get(1)?,
+            username: row.get(2)?,
+            task_id: row.get(3)?,
+            body: row.get(4)?,
+            sent_at: row.get(5)?,
+        }))
+    } else {
+        Ok(None)
+    }
+}
+pub fn list_notes(conn: &Connection, user_id: i64, include_archived: bool) -> rusqlite::Result<Vec<KnowledgeNote>> {
+    let mut query = "SELECT id, user_id, parent_id, title, created_at, updated_at, aliases, is_archived FROM knowledge_notes WHERE user_id=?1".to_string();
+    if !include_archived {
+        query.push_str(" AND is_archived = 0");
+    }
+    let mut stmt = conn.prepare(&query)?;
+    let rows = stmt.query_map(params![user_id], |row| {
+        let id: i64 = row.get(0)?;
+        Ok(KnowledgeNote {
+            id,
+            user_id: row.get(1)?,
+            parent_id: row.get(2)?,
+            title: row.get(3)?,
+            content: read_note_from_file(id),
+            created_at: row.get(4)?,
+            updated_at: row.get(5)?,
+            aliases: row.get(6)?,
+            is_archived: row.get::<usize, i32>(7)? != 0,
+            tags: vec![], // Tags could be joined if needed
+        })
+    })?;
+
+    let mut notes = Vec::new();
+    for n in rows {
+        notes.push(n?);
+    }
+    Ok(notes)
+}
+
+pub fn list_tags(conn: &Connection) -> rusqlite::Result<Vec<NoteTag>> {
+    let mut stmt = conn.prepare("SELECT id, name FROM knowledge_tags")?;
+    let rows = stmt.query_map([], |row| {
+        Ok(NoteTag {
+            id: row.get(0)?,
+            name: row.get(1)?,
+        })
+    })?;
+    let mut tags = Vec::new();
+    for t in rows {
+        tags.push(t?);
+    }
+    Ok(tags)
+}
+
+pub fn get_kb_graph(conn: &Connection) -> rusqlite::Result<KbGraphData> {
+    let mut stmt = conn.prepare("SELECT id, title FROM knowledge_notes WHERE is_archived = 0")?;
+    let nodes = stmt.query_map([], |row| {
+        Ok(KbNode {
+            id: row.get(0)?,
+            label: row.get(1)?,
+        })
+    })?.collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut stmt = conn.prepare("SELECT source_id, target_id FROM note_links")?;
+    let edges = stmt.query_map([], |row| {
+        Ok(KbEdge {
+            from: row.get(0)?,
+            to: row.get(1)?,
+        })
+    })?.collect::<rusqlite::Result<Vec<_>>>()?;
+
+    Ok(KbGraphData { nodes, edges })
 }

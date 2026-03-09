@@ -1,10 +1,12 @@
 use protocol::*;
+use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AppEvent {
     WindowsActivityRecorded(WindowsActivity),
     InputMetricsRecorded(InputMetrics),
+    ChatMessageSent(JournalEntry), // Using JournalEntry for chat too as it has username and detail
     SystemMessage(String),
 }
 

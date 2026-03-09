@@ -35,6 +35,7 @@ pub fn create_table(conn: &Connection) -> rusqlite::Result<()> {
     )
 }
 
+#[expect(dead_code, reason = "Used by upcoming API")]
 pub fn get_settings(conn: &Connection, user_id: i64) -> rusqlite::Result<PulseSettings> {
     let result = conn.query_row(
         "SELECT interval_min, enabled FROM pulse_settings WHERE user_id=?1",
@@ -56,6 +57,7 @@ pub fn get_settings(conn: &Connection, user_id: i64) -> rusqlite::Result<PulseSe
     }
 }
 
+#[expect(dead_code, reason = "Used by upcoming API")]
 pub fn save_settings(conn: &Connection, user_id: i64, s: &PulseSettings) -> rusqlite::Result<()> {
     conn.execute(
         "INSERT OR REPLACE INTO pulse_settings (user_id, interval_min, enabled)
@@ -104,6 +106,7 @@ pub fn get_pending(conn: &Connection, user_id: i64) -> rusqlite::Result<Option<P
     }
 }
 
+#[expect(dead_code, reason = "Used by upcoming API")]
 pub fn answer(
     conn: &Connection,
     pulse_id: i64,
@@ -172,10 +175,10 @@ pub fn answer(
 }
 
 pub fn pulse_worker(db: Arc<Mutex<Connection>>) {
-    std::thread::spawn(move || {
+    tokio::spawn(async move {
         loop {
-            std::thread::sleep(std::time::Duration::from_secs(60));
-            let conn = db.lock().unwrap();
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            let conn = db.lock().expect("Database mutex must not be poisoned");
             let now = Local::now();
 
             let users: Vec<(i64, i64)> = {
@@ -232,6 +235,7 @@ pub fn pulse_worker(db: Arc<Mutex<Connection>>) {
     });
 }
 
+#[expect(dead_code, reason = "Used by upcoming API")]
 pub fn export_csv(conn: &Connection, user_id: i64, date: &str) -> rusqlite::Result<String> {
     let mut stmt = conn.prepare(
         "

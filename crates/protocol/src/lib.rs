@@ -75,6 +75,7 @@ pub struct Task {
 pub struct LoginRequest {
     pub username: String,
     pub password: String,
+    pub remember_me: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -107,6 +108,16 @@ pub struct StartTimerRequest {
     pub task_id: Option<i64>,
     pub category: i32,
     pub note: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ChatMessage {
+    pub id: i64,
+    pub user_id: i64,
+    pub username: String,
+    pub task_id: Option<i64>,
+    pub body: String,
+    pub sent_at: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
